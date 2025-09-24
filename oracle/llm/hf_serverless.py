@@ -14,6 +14,21 @@ try:  # pragma: no cover - optional dependency import
 except Exception:  # pragma: no cover - handled lazily
     InferenceClient = None  # type: ignore[misc]
 
+_MISSING_DEPENDENCY_MSG = (
+    "huggingface-hub must be installed to use HuggingFaceServerlessProvider"
+)
+
+
+class _MissingInferenceClient:
+    """Placeholder client used when huggingface-hub isn't available."""
+
+    def __init__(self, model_id: str, api_token: str | None) -> None:
+        self.model = model_id
+        self.token = api_token or ""
+
+    def text_generation(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN401
+        raise ImportError(_MISSING_DEPENDENCY_MSG)
+
 
 def _get_attr(mapping: object, name: str, default=None):
     """Return attribute or key value from the mapping-like object."""
@@ -109,10 +124,9 @@ class HuggingFaceServerlessProvider(SequenceProvider):
     ) -> None:
         if client is None:
             if InferenceClient is None:  # pragma: no cover - dependency guard
-                raise ImportError(
-                    "huggingface-hub must be installed to use HuggingFaceServerlessProvider"
-                )
-            client = InferenceClient(model=model_id, token=api_token or None)
+                client = _MissingInferenceClient(model_id, api_token)
+            else:
+                client = InferenceClient(model=model_id, token=api_token or None)
         self.client = client
         self.model_id = model_id
         self.api_token = api_token or ""
