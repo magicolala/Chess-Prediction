@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import Oracle_web as web_app
 
 
@@ -7,6 +9,8 @@ def test_api_analyze_returns_expected_json():
     def fake_analyze(**kwargs):
         assert kwargs["pgn"].startswith("1. e4")
         assert kwargs["ctx"] == {"elo": 1500, "time_control": "rapid"}
+        assert kwargs.get("provider") is None
+        assert "depth" not in kwargs
         return {
             "model": "fake",
             "expected_score": 0.75,
@@ -66,6 +70,7 @@ def test_api_analyze_accepts_stockfish_path(monkeypatch):
     def fake_analyze(**kwargs):
         engine_factory = kwargs.get("engine_factory")
         assert engine_factory is not None
+        assert kwargs.get("provider") is None
         with engine_factory():
             pass
         return {
@@ -92,3 +97,108 @@ def test_api_analyze_accepts_stockfish_path(monkeypatch):
 
     assert response.status_code == 200
     assert captured_paths == ["/custom/stockfish"]
+
+
+def test_api_analyze_uses_llm_configuration(monkeypatch):
+    captured_kwargs = {}
+    dummy_provider = object()
+
+    def fake_get_provider(options):
+        assert options["backend"] == "transformers"
+        assert options["model_id"] == "test/model"
+        assert options["token"] == "secret"
+        return dummy_provider
+
+    def fake_analyze(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "model": "fake",
+            "expected_score": 0.1,
+            "usage": {},
+            "moves": [],
+        }
+
+    monkeypatch.setattr(web_app, "_get_provider", fake_get_provider)
+
+    app = web_app.create_app(analyze_fn=fake_analyze)
+    client = app.test_client()
+
+    payload = {
+        "pgn": "1. e4 e5",
+        "context": {"elo": 1800, "time_control": "blitz"},
+        "llm": {
+            "backend": "transformers",
+            "model_id": "test/model",
+            "token": "secret",
+            "depth": 4,
+            "top_k": 7,
+            "prob_threshold": 0.002,
+        },
+    }
+
+    response = client.post(
+        "/api/analyze",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs["provider"] is dummy_provider
+    assert captured_kwargs["depth"] == 4
+    assert captured_kwargs["top_k"] == 7
+    assert captured_kwargs["prob_threshold"] == 0.002
+
+
+def test_api_analyze_rejects_invalid_llm_backend():
+    app = web_app.create_app(analyze_fn=lambda **_: pytest.fail("should not run"))
+    client = app.test_client()
+
+    payload = {
+        "pgn": "1. e4 e5",
+        "context": {"elo": 1500, "time_control": "rapid"},
+        "llm": {"backend": "invalid"},
+    }
+
+    response = client.post(
+        "/api/analyze",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    data = response.get_json()
+    assert "backend" in data["error"].lower()
+
+
+def test_api_analyze_accepts_llm_overrides_without_backend():
+    captured_kwargs = {}
+
+    def fake_analyze(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "model": "fake",
+            "expected_score": 0.2,
+            "usage": {},
+            "moves": [],
+        }
+
+    app = web_app.create_app(analyze_fn=fake_analyze)
+    client = app.test_client()
+
+    payload = {
+        "pgn": "1. e4 e5",
+        "context": {"elo": 1600, "time_control": "rapid"},
+        "llm": {"depth": 5, "top_k": 6, "prob_threshold": 0.01},
+    }
+
+    response = client.post(
+        "/api/analyze",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs["provider"] is None
+    assert captured_kwargs["depth"] == 5
+    assert captured_kwargs["top_k"] == 6
+    assert captured_kwargs["prob_threshold"] == 0.01

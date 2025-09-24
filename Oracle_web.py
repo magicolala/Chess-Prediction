@@ -3,20 +3,47 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Dict
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import chess.engine
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+from oracle.llm.base import SequenceProvider
+from oracle.llm.llama_cpp_local import LlamaCppLocalProvider
+from oracle.llm.selector import DEFAULT_TOP_K
+from oracle.llm.transformers_local import TransformersLocalProvider
 from oracle.pipeline.analyze import analyze as default_analyze
 
 DEFAULT_ELO = 1500
 DEFAULT_TIME_CONTROL = "classical"
 DEFAULT_STOCKFISH_PATH = os.getenv("STOCKFISH_PATH", "")
+DEFAULT_LLM_BACKEND = os.getenv("ORACLE_LLM_BACKEND", "")
+DEFAULT_TRANSFORMERS_MODEL_ID = os.getenv("ORACLE_MODEL_ID", "")
+DEFAULT_LLAMA_MODEL_PATH = os.getenv("ORACLE_GGUF_PATH", "")
+
+
+def _coerce_numeric_env(name: str, fallback: str, cast) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return fallback
+    try:
+        cast(value)
+    except (TypeError, ValueError):
+        return fallback
+    return str(value)
+
+
+DEFAULT_LLM_DEPTH = _coerce_numeric_env("ORACLE_LLM_DEPTH", "3", int)
+DEFAULT_LLM_TOP_K = _coerce_numeric_env("ORACLE_TOP_K", str(DEFAULT_TOP_K), int)
+DEFAULT_LLM_PROB_THRESHOLD = _coerce_numeric_env(
+    "ORACLE_PROB_THRESHOLD", "0.001", float
+)
+
+_PROVIDER_CACHE: Dict[Tuple[str, ...], SequenceProvider] = {}
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
-<html lang='en'>
+<html lang='fr'>
 <head>
   <meta charset='utf-8'>
   <title>Oracle Analyzer</title>
@@ -30,6 +57,15 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     .controls input, .controls select { padding: 0.3rem; }
     .stockfish { flex: 1 1 100%; display: flex; flex-direction: column; }
     .stockfish input { width: 100%; box-sizing: border-box; }
+    .llm-config { margin-top: 1.5rem; border: 1px solid #e0e0e0; padding: 1rem; border-radius: 6px; background: #fafafa; }
+    .llm-config h2 { margin-top: 0; font-size: 1.1rem; }
+    .llm-config label { font-weight: bold; margin-top: 0.5rem; }
+    .llm-config input, .llm-config select { margin-top: 0.25rem; }
+    .llm-fields { display: none; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+    .llm-fields input { width: 100%; box-sizing: border-box; }
+    .llm-advanced { margin-top: 0.75rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.5rem 1rem; align-items: end; }
+    .llm-advanced label { font-weight: bold; }
+    button.primary { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -37,9 +73,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
   <label for='pgn'>PGN</label><br>
   <textarea id='pgn'></textarea>
   <div class='controls'>
-    <label for='elo'>Elo:</label>
+    <label for='elo'>Elo :</label>
     <input id='elo' type='number' value='1500'>
-    <label for='time_control'>Time Control:</label>
+    <label for='time_control'>Cadence :</label>
     <select id='time_control'>
       <option value='bullet'>bullet</option>
       <option value='blitz'>blitz</option>
@@ -47,13 +83,98 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <option value='classical'>classical</option>
     </select>
     <div class='stockfish'>
-      <label for='stockfish_path'>Stockfish Path:</label>
+      <label for='stockfish_path'>Chemin Stockfish :</label>
       <input id='stockfish_path' type='text' placeholder='/usr/local/bin/stockfish' value='__STOCKFISH_PATH__'>
     </div>
-    <button onclick='analyze()'>Analyze</button>
+    <button class='primary' onclick='analyze()'>Analyser</button>
+  </div>
+  <div class='llm-config'>
+    <h2>Configuration LLM</h2>
+    <label for='llm_backend'>Backend :</label>
+    <select id='llm_backend' onchange='updateLlmFields()'>
+      <option value=''>Défaut (variables d'environnement)</option>
+      <option value='transformers'>Transformers (local)</option>
+      <option value='llama_cpp'>llama.cpp (GGUF)</option>
+    </select>
+    <div class='llm-fields' id='llm_transformers'>
+      <label for='llm_model_id'>Modèle Transformers :</label>
+      <input id='llm_model_id' type='text' value='__TRANSFORMERS_MODEL_ID__' placeholder='ex: meta-llama/Llama-3-8B-Instruct'>
+      <label for='llm_hf_token'>Jeton Hugging Face (optionnel) :</label>
+      <input id='llm_hf_token' type='password' value=''>
+    </div>
+    <div class='llm-fields' id='llm_llama'>
+      <label for='llm_model_path'>Chemin du modèle GGUF :</label>
+      <input id='llm_model_path' type='text' value='__LLAMA_MODEL_PATH__' placeholder='/chemin/vers/modele.gguf'>
+    </div>
+    <div class='llm-advanced'>
+      <div>
+        <label for='llm_depth'>Profondeur :</label>
+        <input id='llm_depth' type='number' min='1' max='8' value='__LLM_DEPTH__'>
+      </div>
+      <div>
+        <label for='llm_top_k'>Top K :</label>
+        <input id='llm_top_k' type='number' min='1' max='20' value='__LLM_TOP_K__'>
+      </div>
+      <div>
+        <label for='llm_prob_threshold'>Seuil de probabilité :</label>
+        <input id='llm_prob_threshold' type='number' min='0.000001' max='0.5' step='0.0001' value='__LLM_PROB_THRESHOLD__'>
+      </div>
+    </div>
   </div>
   <div id='result'></div>
 <script>
+const DEFAULT_BACKEND = '__LLM_BACKEND__';
+function updateLlmFields() {
+  const backend = document.getElementById('llm_backend').value;
+  const tf = document.getElementById('llm_transformers');
+  const llama = document.getElementById('llm_llama');
+  if (backend === 'transformers') {
+    tf.style.display = 'flex';
+    llama.style.display = 'none';
+  } else if (backend === 'llama_cpp') {
+    tf.style.display = 'none';
+    llama.style.display = 'flex';
+  } else {
+    tf.style.display = 'none';
+    llama.style.display = 'none';
+  }
+}
+function collectLlmConfig() {
+  const backend = document.getElementById('llm_backend').value;
+  const config = {};
+  const depthValue = parseInt(document.getElementById('llm_depth').value, 10);
+  if (!Number.isNaN(depthValue)) {
+    config.depth = depthValue;
+  }
+  const topKValue = parseInt(document.getElementById('llm_top_k').value, 10);
+  if (!Number.isNaN(topKValue)) {
+    config.top_k = topKValue;
+  }
+  const probThresholdValue = parseFloat(document.getElementById('llm_prob_threshold').value);
+  if (!Number.isNaN(probThresholdValue)) {
+    config.prob_threshold = probThresholdValue;
+  }
+  if (backend === 'transformers') {
+    config.backend = backend;
+    const modelId = document.getElementById('llm_model_id').value.trim();
+    if (modelId) {
+      config.model_id = modelId;
+    }
+    const hfToken = document.getElementById('llm_hf_token').value.trim();
+    if (hfToken) {
+      config.token = hfToken;
+    }
+  } else if (backend === 'llama_cpp') {
+    config.backend = backend;
+    const modelPath = document.getElementById('llm_model_path').value.trim();
+    if (modelPath) {
+      config.model_path = modelPath;
+    }
+  } else if (Object.keys(config).length === 0) {
+    return null;
+  }
+  return Object.keys(config).length > 0 ? config : null;
+}
 async function analyze() {
   const stockfishPath = document.getElementById('stockfish_path').value.trim();
   const payload = {
@@ -64,6 +185,10 @@ async function analyze() {
     },
     stockfish_path: stockfishPath
   };
+  const llmConfig = collectLlmConfig();
+  if (llmConfig) {
+    payload.llm = llmConfig;
+  }
   const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -92,10 +217,114 @@ async function analyze() {
   html += '</tbody></table>';
   container.innerHTML = html;
 }
+document.addEventListener('DOMContentLoaded', () => {
+  if (DEFAULT_BACKEND) {
+    document.getElementById('llm_backend').value = DEFAULT_BACKEND;
+  }
+  updateLlmFields();
+});
 </script>
 </body>
 </html>
 """
+
+
+def _clean_string(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _normalize_backend(value: Any) -> str:
+    backend = _clean_string(value).lower()
+    if not backend:
+        raise ValueError("Merci de sélectionner un backend LLM.")
+    if backend not in {"transformers", "llama_cpp"}:
+        raise ValueError(
+            "Backend LLM inconnu. Choisissez 'transformers' ou 'llama_cpp'."
+        )
+    return backend
+
+
+def _provider_cache_key(options: Dict[str, Any]) -> Tuple[str, ...]:
+    backend = _normalize_backend(options.get("backend"))
+    if backend == "transformers":
+        model_id = _clean_string(options.get("model_id"))
+        token = _clean_string(options.get("token"))
+        return (backend, model_id, token)
+    if backend == "llama_cpp":
+        model_path = _clean_string(options.get("model_path"))
+        return (backend, model_path)
+    return (backend,)
+
+
+def _build_provider(options: Dict[str, Any]) -> SequenceProvider:
+    backend = _normalize_backend(options.get("backend"))
+    if backend == "transformers":
+        model_id = _clean_string(options.get("model_id"))
+        if not model_id:
+            raise ValueError("Merci d'indiquer l'identifiant du modèle Transformers.")
+        token = _clean_string(options.get("token"))
+        if token:
+            os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
+            os.environ["HF_HUB_TOKEN"] = token
+        return TransformersLocalProvider(model_id=model_id)
+    if backend == "llama_cpp":
+        model_path = _clean_string(options.get("model_path"))
+        if not model_path:
+            raise ValueError("Merci d'indiquer le chemin du modèle GGUF.")
+        return LlamaCppLocalProvider(model_path=model_path)
+    raise ValueError("Backend LLM inconnu. Choisissez 'transformers' ou 'llama_cpp'.")
+
+
+def _get_provider(options: Dict[str, Any]) -> SequenceProvider:
+    key = _provider_cache_key(options)
+    provider = _PROVIDER_CACHE.get(key)
+    if provider is not None:
+        return provider
+    provider = _build_provider(options)
+    _PROVIDER_CACHE[key] = provider
+    return provider
+
+
+def _parse_int(
+    value: Any,
+    label: str,
+    *,
+    minimum: Optional[int] = None,
+    maximum: Optional[int] = None,
+) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} doit être un entier.") from exc
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{label} doit être supérieur ou égal à {minimum}.")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{label} doit être inférieur ou égal à {maximum}.")
+    return parsed
+
+
+def _parse_float(
+    value: Any,
+    label: str,
+    *,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} doit être un nombre.") from exc
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{label} doit être supérieur ou égal à {minimum}.")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{label} doit être inférieur ou égal à {maximum}.")
+    return parsed
 
 
 def _make_engine_factory(path: str) -> Callable[[], chess.engine.SimpleEngine]:
@@ -140,8 +369,72 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
         engine_factory = (
             _make_engine_factory(stockfish_path) if stockfish_path else None
         )
+        llm_payload = payload.get("llm") or {}
+        provider: Optional[SequenceProvider] = None
+        analyze_overrides: Dict[str, Any] = {}
+        backend_value = _clean_string(llm_payload.get("backend"))
+        if backend_value:
+            llm_payload["backend"] = backend_value
+            try:
+                provider = _get_provider(llm_payload)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except ImportError as exc:
+                app.logger.exception("Missing LLM dependency", exc_info=exc)
+                return (
+                    jsonify(
+                        {
+                            "error": (
+                                "Le backend LLM requis n'est pas disponible (dépendance manquante)."
+                            )
+                        }
+                    ),
+                    400,
+                )
         try:
-            result = analyze_fn(pgn=pgn, ctx=ctx, engine_factory=engine_factory)
+            depth = _parse_int(
+                llm_payload.get("depth"),
+                "La profondeur LLM",
+                minimum=1,
+                maximum=16,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if depth is not None:
+            analyze_overrides["depth"] = depth
+
+        try:
+            top_k = _parse_int(
+                llm_payload.get("top_k"),
+                "Le paramètre Top K",
+                minimum=1,
+                maximum=50,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if top_k is not None:
+            analyze_overrides["top_k"] = top_k
+
+        try:
+            prob_threshold = _parse_float(
+                llm_payload.get("prob_threshold"),
+                "Le seuil de probabilité",
+                minimum=0.000001,
+                maximum=0.5,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if prob_threshold is not None:
+            analyze_overrides["prob_threshold"] = prob_threshold
+
+        try:
+            result = analyze_fn(
+                pgn=pgn,
+                ctx=ctx,
+                provider=provider,
+                engine_factory=engine_factory,
+                **analyze_overrides,
+            )
         except (FileNotFoundError, chess.engine.EngineError) as exc:
             app.logger.exception("Stockfish engine error", exc_info=exc)
             return (
@@ -155,7 +448,15 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
 
     @app.get("/")
     def index():
-        return INDEX_HTML_TEMPLATE.replace("__STOCKFISH_PATH__", DEFAULT_STOCKFISH_PATH)
+        return (
+            INDEX_HTML_TEMPLATE.replace("__STOCKFISH_PATH__", DEFAULT_STOCKFISH_PATH)
+            .replace("__LLM_BACKEND__", DEFAULT_LLM_BACKEND)
+            .replace("__TRANSFORMERS_MODEL_ID__", DEFAULT_TRANSFORMERS_MODEL_ID)
+            .replace("__LLAMA_MODEL_PATH__", DEFAULT_LLAMA_MODEL_PATH)
+            .replace("__LLM_DEPTH__", DEFAULT_LLM_DEPTH)
+            .replace("__LLM_TOP_K__", DEFAULT_LLM_TOP_K)
+            .replace("__LLM_PROB_THRESHOLD__", DEFAULT_LLM_PROB_THRESHOLD)
+        )
 
     return app
 
