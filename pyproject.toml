@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chess-prediction"
+version = "0.1.0"
+description = "Local chess move prediction oracle"
+requires-python = ">=3.11"
+dependencies = [
+    "python-chess",
+    "flask",
+    "flask-cors",
+    "pytest",
+    "pytest-cov",
+]
+
+[project.optional-dependencies]
+llm = [
+    "transformers",
+    "accelerate",
+    "llama-cpp-python",
+]
+
+[tool.pytest.ini_options]
+addopts = "--maxfail=1 --disable-warnings"
+pythonpath = ["."]
