@@ -55,9 +55,7 @@ def clear_behaviors():
 
 
 def test_hf_serverless_switches_model_on_conversational_error(monkeypatch):
-    monkeypatch.setenv(
-        "HF_MODEL_CANDIDATES", "model-a,model-b"
-    )
+    monkeypatch.setenv("HF_MODEL_CANDIDATES", "model-a,model-b")
 
     created_models: list[str] = []
 
@@ -83,8 +81,46 @@ def test_hf_serverless_switches_model_on_conversational_error(monkeypatch):
         "Prompt", ["e4"], depth=1, prob_threshold=0.0, top_k=5
     )
 
-    assert created_models == ["model-a", "model-b"], "Provider should try fallback model"
+    assert created_models == [
+        "model-a",
+        "model-b",
+    ], "Provider should try fallback model"
     assert results, "Fallback model should yield token distribution"
     token, logprob = results[0]
     assert isinstance(token, str)
     assert isinstance(logprob, float)
+
+
+class FakeHttpError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def test_hf_serverless_switches_model_on_404(monkeypatch):
+    monkeypatch.setenv("HF_MODEL_CANDIDATES", "model-x,model-y")
+
+    created_models: list[str] = []
+
+    def factory(model: str, token: str | None = None, provider: str | None = None):
+        client = StubInferenceClient(model, token, provider)
+        created_models.append(model)
+        return client
+
+    monkeypatch.setattr("oracle.llm.hf_serverless.InferenceClient", factory)
+
+    BEHAVIORS.update(
+        {
+            "model-x": FakeHttpError(404, "Model model-x not found"),
+            "model-y": FAKE_RESP,
+        }
+    )
+
+    provider = HuggingFaceServerlessProvider(model_id="model-x", api_token="token")
+
+    results = provider.get_top_sequences(
+        "Prompt", ["e4"], depth=1, prob_threshold=0.0, top_k=5
+    )
+
+    assert created_models == ["model-x", "model-y"], "Should try fallback model on 404"
+    assert results, "Fallback model should succeed after 404"
