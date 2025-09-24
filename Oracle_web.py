@@ -36,12 +36,13 @@ DEFAULT_LLM_BACKEND = os.getenv("ORACLE_LLM_BACKEND", "")
 DEFAULT_LLM_PROVIDER = os.getenv("ORACLE_LLM_PROVIDER", DEFAULT_LLM_BACKEND)
 DEFAULT_TRANSFORMERS_MODEL_ID = os.getenv("ORACLE_MODEL_ID", "")
 DEFAULT_LLAMA_MODEL_PATH = os.getenv("ORACLE_GGUF_PATH", "")
+DEFAULT_HF_MODEL_CANDIDATES = os.getenv("HF_MODEL_CANDIDATES", "")
 
 try:
     _HF_DEFAULTS = load_hf_settings_from_env()
 except RuntimeError:
     _HF_DEFAULTS = {
-        "model_id": "mistralai/Mistral-7B-Instruct-v0.2",
+        "model_id": "HuggingFaceH4/zephyr-7b-beta",
         "api_token": None,
         "top_n_tokens": 10,
         "temperature": 0.0,
@@ -138,7 +139,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     </div>
     <div class='llm-fields' id='llm_hf'>
       <label for='llm_hf_model_id'>Modèle Hugging Face :</label>
-      <input id='llm_hf_model_id' type='text' value='__HF_MODEL_ID__' placeholder='mistralai/Mistral-7B-Instruct-v0.2'>
+      <input id='llm_hf_model_id' type='text' value='__HF_MODEL_ID__' placeholder='HuggingFaceH4/zephyr-7b-beta'>
       <label for='llm_hf_api_token'>Jeton API (optionnel) :</label>
       <input id='llm_hf_api_token' type='password' value=''>
     </div>
@@ -599,6 +600,8 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
         print(f"TRANSFORMERS_MODEL_ID: {DEFAULT_TRANSFORMERS_MODEL_ID}")
         print(f"LLAMA_MODEL_PATH: {DEFAULT_LLAMA_MODEL_PATH}")
         print(f"HF_MODEL_ID: {DEFAULT_HF_MODEL_ID}")
+        if DEFAULT_HF_MODEL_CANDIDATES:
+            print(f"HF_MODEL_CANDIDATES: {DEFAULT_HF_MODEL_CANDIDATES}")
         print(f"LLM_DEPTH: {DEFAULT_LLM_DEPTH}")
         print(f"LLM_TOP_K: {DEFAULT_LLM_TOP_K}")
         print(f"LLM_PROB_THRESHOLD: {DEFAULT_LLM_PROB_THRESHOLD}")

@@ -122,13 +122,6 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         rate_limit_delay: float = 1.0,
         sleep: Optional[Callable[[float], None]] = None,
     ) -> None:
-        if client is None:
-            if InferenceClient is None:  # pragma: no cover - dependency guard
-                client = _MissingInferenceClient(model_id, api_token)
-            else:
-                client = InferenceClient(model=model_id, token=api_token or None)
-        self.client = client
-        self.model_id = model_id
         self.api_token = api_token or ""
         self.top_n_tokens = max(1, int(top_n_tokens or 1))
         self.temperature = float(temperature)
@@ -138,6 +131,18 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         self.retry_base_delay = max(0.0, float(retry_base_delay))
         self.rate_limit_delay = max(0.0, float(rate_limit_delay))
         self._sleep = sleep if sleep is not None else time.sleep
+
+        self._client_factory = None
+        self.models = self._build_candidate_list(model_id)
+        self._model_idx = 0
+
+        if client is not None:
+            self.client = client
+        else:
+            self._client_factory = self._create_client
+            self.client = self._client_factory(self.current_model)
+
+        self.model_id = self.current_model
 
     # SequenceProvider protocol -------------------------------------------------
     def get_top_sequences(
@@ -173,6 +178,10 @@ class HuggingFaceServerlessProvider(SequenceProvider):
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 attempts += 1
+                if self._should_switch_model(exc):
+                    switched = self._advance_model()
+                    if switched:
+                        continue
                 if attempts >= self.max_retries:
                     break
                 delay = self.retry_base_delay * (2 ** (attempts - 1))
@@ -210,14 +219,67 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
         return top_tokens[: int(top_k)]
 
+    # Candidate management ----------------------------------------------------
+    def _build_candidate_list(self, model_id: str) -> List[str]:
+        env_value = os.getenv("HF_MODEL_CANDIDATES", "")
+        if env_value:
+            raw_candidates = [item.strip() for item in env_value.split(",") if item.strip()]
+        else:
+            primary = model_id or "HuggingFaceH4/zephyr-7b-beta"
+            raw_candidates = [
+                primary,
+                "Qwen/Qwen2.5-7B-Instruct",
+                "tiiuae/falcon-7b-instruct",
+            ]
+        if model_id and model_id not in raw_candidates:
+            raw_candidates.insert(0, model_id)
+        candidates: List[str] = []
+        seen = set()
+        for candidate in raw_candidates:
+            if not candidate or candidate in seen:
+                continue
+            candidates.append(candidate)
+            seen.add(candidate)
+        if not candidates:
+            raise RuntimeError("No Hugging Face models configured")
+        return candidates
+
+    @property
+    def current_model(self) -> str:
+        return self.models[self._model_idx]
+
+    def _create_client(self, model: str):  # noqa: ANN101
+        if InferenceClient is None:  # pragma: no cover - dependency guard
+            return _MissingInferenceClient(model, self.api_token or None)
+        return InferenceClient(model=model, token=self.api_token or None)
+
+    def _advance_model(self) -> bool:
+        if self._client_factory is None:
+            return False
+        if self._model_idx + 1 >= len(self.models):
+            return False
+        self._model_idx += 1
+        self.client = self._client_factory(self.current_model)
+        self.model_id = self.current_model
+        print(f"HF serverless fallback -> {self.current_model}")
+        return True
+
+    @staticmethod
+    def _should_switch_model(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "not supported for task text-generation" in message
+            and "conversational" in message
+        )
+
 
 def load_hf_settings_from_env() -> Dict[str, object]:
     """Return Hugging Face configuration derived from environment variables."""
 
-    model_id = os.getenv("HF_MODEL_ID", "mistralai/Mistral-7B-Instruct-v0.2")
+    model_id = os.getenv("HF_MODEL_ID", "HuggingFaceH4/zephyr-7b-beta")
     api_token = os.getenv("HF_API_TOKEN") or None
     top_n_raw = os.getenv("HF_TOP_N_TOKENS", "10")
-    temp_raw = os.getenv("ORACLE_TEMP", "0")
+    temp_raw = os.getenv("HF_TEMPERATURE", "0")
     expose_raw = os.getenv("ORACLE_EXPOSE_PROBS", "false")
 
     try:
@@ -228,7 +290,7 @@ def load_hf_settings_from_env() -> Dict[str, object]:
     try:
         temperature = float(temp_raw)
     except ValueError as exc:
-        raise RuntimeError("ORACLE_TEMP must be a number") from exc
+        raise RuntimeError("HF_TEMPERATURE must be a number") from exc
 
     expose_probs = expose_raw.lower() in {"1", "true", "yes", "on"}
 
@@ -245,5 +307,12 @@ def build_hf_client_from_env() -> HuggingFaceServerlessProvider:
     """Helper to build a provider from environment variables."""
 
     settings = load_hf_settings_from_env()
-    return HuggingFaceServerlessProvider(**settings)
+    provider = HuggingFaceServerlessProvider(**settings)
+    models = getattr(provider, "models", None)
+    if isinstance(models, Sequence) and models:
+        candidate_list = ", ".join(str(model) for model in models)
+        print(f"HF serverless model candidates: {candidate_list}")
+    active_model = getattr(provider, "current_model", None) or provider.model_id
+    print(f"HF serverless active model: {active_model}")
+    return provider
 

@@ -20,6 +20,47 @@ Oracle is the first chess engine that plays like a human, from amateur to super 
 - **Oracle_web:** Installez `flask` (`pip install flask`) puis lancez `python Oracle_web.py`. Ouvrez le navigateur sur <http://127.0.0.1:8000> pour utiliser l'interface graphique.
   - Réglez ORACLE_WEB_LOG_LEVEL (ex. DEBUG) et ORACLE_WEB_DEBUG=true pour activer un journal détaillé.
 
+## Free Online LLM (Hugging Face Serverless)
+
+Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en utilisant des modèles d'inférence publics pour la génération de texte. Configurez l'environnement suivant :
+
+1. Créez un compte Hugging Face et générez un token lecture (Settings → Access Tokens). Un token n'est pas obligatoire mais il réduit les limites de taux : <https://huggingface.co/settings/tokens>.
+2. Exportez les variables d'environnement suivantes :
+
+   | Variable | Description | Valeur par défaut |
+   | --- | --- | --- |
+   | `LLM_PROVIDER` | Sélectionne le backend | `hf_serverless` |
+   | `HF_API_TOKEN` | Token optionnel Hugging Face | *(vide)* |
+   | `HF_MODEL_ID` | Modèle primaire text-generation | `HuggingFaceH4/zephyr-7b-beta` |
+   | `HF_MODEL_CANDIDATES` | Liste CSV des candidats (ordre de fallback) | `HuggingFaceH4/zephyr-7b-beta,Qwen/Qwen2.5-7B-Instruct,tiiuae/falcon-7b-instruct` |
+   | `HF_TOP_N_TOKENS` | Nombre de tokens renvoyés par la distribution | `10` |
+   | `HF_TEMPERATURE` | Température (laisser `0` pour un comportement déterministe) | `0` |
+
+   Exemple PowerShell (persistance Windows) :
+
+   ```powershell
+   setx LLM_PROVIDER "hf_serverless"
+   setx HF_API_TOKEN "hf_xxxxxxxxxxxxxxxxx"
+   setx HF_MODEL_ID "HuggingFaceH4/zephyr-7b-beta"
+   setx HF_MODEL_CANDIDATES "HuggingFaceH4/zephyr-7b-beta,Qwen/Qwen2.5-7B-Instruct,tiiuae/falcon-7b-instruct"
+   setx HF_TOP_N_TOKENS "10"
+   setx HF_TEMPERATURE "0"
+   ```
+
+   Exemple `.env` (Unix/macOS) :
+
+   ```bash
+   export LLM_PROVIDER="hf_serverless"
+   export HF_API_TOKEN="hf_xxxxxxxxxxxxxxxxx"
+   export HF_MODEL_ID="HuggingFaceH4/zephyr-7b-beta"
+   export HF_MODEL_CANDIDATES="HuggingFaceH4/zephyr-7b-beta,Qwen/Qwen2.5-7B-Instruct,tiiuae/falcon-7b-instruct"
+   export HF_TOP_N_TOKENS="10"
+   export HF_TEMPERATURE="0"
+   ```
+
+Le provider détecte automatiquement les erreurs « not supported for task text-generation … conversational ». En cas de routage vers un point de terminaison chat-only, il bascule instantanément sur le prochain modèle de `HF_MODEL_CANDIDATES` et relance la requête tout en conservant l'extraction des logprobs (`details` + `top_n_tokens`). Les probabilités retournées pour chaque coup sont normalisées pour sommer à 100 % (±0,1) dans l'API `/api/analyze`.
+
+
 ## Examples
 
 ![Ding vs. Nepo, round 14 after 58...a3](Readme_DingvsNepo_chesscom.png)

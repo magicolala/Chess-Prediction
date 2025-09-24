@@ -70,7 +70,7 @@ def test_selector_hf_serverless(monkeypatch):
     monkeypatch.setenv("ORACLE_LLM_PROVIDER", "hf_serverless")
     monkeypatch.setenv("HF_MODEL_ID", "test/model")
     monkeypatch.setenv("HF_TOP_N_TOKENS", "7")
-    monkeypatch.setenv("ORACLE_TEMP", "0")
+    monkeypatch.setenv("HF_TEMPERATURE", "0")
 
     provider = selector.build_sequence_provider()
 
