@@ -25,9 +25,15 @@ FAKE_RESP = {
 
 
 class StubInferenceClient:
-    def __init__(self, model: str, token: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        token: str | None = None,
+        provider: str | None = None,
+    ) -> None:
         self.model = model
         self.token = token
+        self.provider = provider
         self.calls = 0
 
     def text_generation(self, *args: Any, **kwargs: Any):  # noqa: ANN401
@@ -55,8 +61,8 @@ def test_hf_serverless_switches_model_on_conversational_error(monkeypatch):
 
     created_models: list[str] = []
 
-    def factory(model: str, token: str | None = None):
-        client = StubInferenceClient(model, token)
+    def factory(model: str, token: str | None = None, provider: str | None = None):
+        client = StubInferenceClient(model, token, provider)
         created_models.append(model)
         return client
 

@@ -117,6 +117,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         temperature: float = 0.0,
         do_sample: Optional[bool] = None,
         expose_probs: bool | None = None,
+        provider: str | None = None,
         max_retries: int = 3,
         retry_base_delay: float = 0.5,
         rate_limit_delay: float = 1.0,
@@ -127,6 +128,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         self.temperature = float(temperature)
         self.do_sample = bool(do_sample) if do_sample is not None else self.temperature > 0
         self.expose_probs = bool(expose_probs) if expose_probs is not None else False
+        self.provider = (provider or "hf-inference").strip() or "hf-inference"
         self.max_retries = max(1, int(max_retries or 1))
         self.retry_base_delay = max(0.0, float(retry_base_delay))
         self.rate_limit_delay = max(0.0, float(rate_limit_delay))
@@ -251,7 +253,11 @@ class HuggingFaceServerlessProvider(SequenceProvider):
     def _create_client(self, model: str):  # noqa: ANN101
         if InferenceClient is None:  # pragma: no cover - dependency guard
             return _MissingInferenceClient(model, self.api_token or None)
-        return InferenceClient(model=model, token=self.api_token or None)
+        return InferenceClient(
+            model=model,
+            token=self.api_token or None,
+            provider=self.provider,
+        )
 
     def _advance_model(self) -> bool:
         if self._client_factory is None:
@@ -281,6 +287,7 @@ def load_hf_settings_from_env() -> Dict[str, object]:
     top_n_raw = os.getenv("HF_TOP_N_TOKENS", "10")
     temp_raw = os.getenv("HF_TEMPERATURE", "0")
     expose_raw = os.getenv("ORACLE_EXPOSE_PROBS", "false")
+    provider = os.getenv("HF_PROVIDER")
 
     try:
         top_n_tokens = int(top_n_raw)
@@ -300,6 +307,7 @@ def load_hf_settings_from_env() -> Dict[str, object]:
         "top_n_tokens": max(1, top_n_tokens),
         "temperature": temperature,
         "expose_probs": expose_probs,
+        "provider": provider,
     }
 
 

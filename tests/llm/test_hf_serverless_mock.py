@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from oracle.llm.hf_serverless import HuggingFaceServerlessProvider
+from oracle.llm.hf_serverless import load_hf_settings_from_env
 
 
 class DummyClient:
@@ -38,6 +39,53 @@ def build_provider(response=FAKE_RESPONSE, **kwargs):
         model_id="mistral", client=client, top_n_tokens=5, **kwargs
     )
     return provider, client
+
+
+def test_hf_serverless_defaults_provider(monkeypatch):
+    captured = {}
+
+    class FakeInferenceClient:  # noqa: D401 - simple stub for dependency injection
+        """Capture initialization kwargs from HuggingFaceServerlessProvider."""
+
+        def __init__(self, *, model, token=None, provider=None, **kwargs):
+            captured["model"] = model
+            captured["token"] = token
+            captured["provider"] = provider
+
+        def text_generation(self, *args, **kwargs):  # pragma: no cover - not exercised
+            raise AssertionError("text_generation should not be called")
+
+    monkeypatch.setattr(
+        "oracle.llm.hf_serverless.InferenceClient", FakeInferenceClient
+    )
+
+    provider = HuggingFaceServerlessProvider(model_id="mixtral", api_token="tok")
+
+    assert provider.provider == "hf-inference"
+    assert captured == {"model": "mixtral", "token": "tok", "provider": "hf-inference"}
+
+
+def test_hf_serverless_provider_env_override(monkeypatch):
+    monkeypatch.setenv("HF_PROVIDER", "auto")
+    settings = load_hf_settings_from_env()
+    assert settings["provider"] == "auto"
+
+    captured = {}
+
+    class FakeInferenceClient:
+        def __init__(self, *, model, token=None, provider=None, **kwargs):
+            captured["provider"] = provider
+
+        def text_generation(self, *args, **kwargs):  # pragma: no cover - not exercised
+            raise AssertionError("text_generation should not be called")
+
+    monkeypatch.setattr(
+        "oracle.llm.hf_serverless.InferenceClient", FakeInferenceClient
+    )
+
+    provider = HuggingFaceServerlessProvider(**settings)
+    assert provider.provider == "auto"
+    assert captured["provider"] == "auto"
 
 
 def test_hf_serverless_returns_top_sequences():
