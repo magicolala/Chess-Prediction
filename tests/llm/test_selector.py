@@ -1,6 +1,7 @@
 import pytest
 
 from oracle.llm import selector
+from oracle.llm.hf_serverless import HuggingFaceServerlessProvider
 
 
 class DummyTransformersProvider:
@@ -62,3 +63,17 @@ def test_selector_unknown_backend(monkeypatch):
 
     with pytest.raises(RuntimeError):
         selector.build_sequence_provider()
+
+
+def test_selector_hf_serverless(monkeypatch):
+    monkeypatch.delenv("ORACLE_USE_LOCAL", raising=False)
+    monkeypatch.setenv("ORACLE_LLM_PROVIDER", "hf_serverless")
+    monkeypatch.setenv("HF_MODEL_ID", "test/model")
+    monkeypatch.setenv("HF_TOP_N_TOKENS", "7")
+    monkeypatch.setenv("ORACLE_TEMP", "0")
+
+    provider = selector.build_sequence_provider()
+
+    assert isinstance(provider, HuggingFaceServerlessProvider)
+    assert provider.model_id == "test/model"
+    assert provider.top_n_tokens == 7

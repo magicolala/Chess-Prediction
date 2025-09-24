@@ -3,26 +3,37 @@
 from __future__ import annotations
 
 import os
-from typing import Tuple
 
 from .base import SequenceProvider
+from .hf_serverless import build_hf_client_from_env
 from .llama_cpp_local import LlamaCppLocalProvider
 from .transformers_local import TransformersLocalProvider
 
 DEFAULT_TOP_K = 5
 
 
+def _parse_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def _ensure_local_enabled() -> None:
-    use_local = os.getenv("ORACLE_USE_LOCAL", "1")
-    if use_local not in {"1", "true", "True", "YES", "yes"}:
-        raise RuntimeError("Local LLM usage is required but ORACLE_USE_LOCAL is not enabled")
+    use_local = _parse_bool_env("ORACLE_USE_LOCAL", True)
+    if not use_local:
+        raise RuntimeError(
+            "Local LLM usage is required but ORACLE_USE_LOCAL is not enabled"
+        )
 
 
-def build_sequence_provider() -> SequenceProvider:
+def _build_local_provider() -> SequenceProvider:
     _ensure_local_enabled()
     backend = os.getenv("ORACLE_LLM_BACKEND")
     if not backend:
-        raise RuntimeError("ORACLE_LLM_BACKEND must be set to 'transformers' or 'llama_cpp'")
+        raise RuntimeError(
+            "ORACLE_LLM_BACKEND must be set to 'transformers' or 'llama_cpp'"
+        )
 
     backend = backend.lower()
     if backend == "transformers":
@@ -37,6 +48,17 @@ def build_sequence_provider() -> SequenceProvider:
         return LlamaCppLocalProvider(model_path=model_path)
 
     raise RuntimeError(f"Unsupported ORACLE_LLM_BACKEND: {backend}")
+
+
+def build_sequence_provider() -> SequenceProvider:
+    provider = os.getenv("ORACLE_LLM_PROVIDER")
+    if provider:
+        provider = provider.lower()
+        if provider == "hf_serverless":
+            return build_hf_client_from_env()
+        raise RuntimeError(f"Unsupported ORACLE_LLM_PROVIDER: {provider}")
+
+    return _build_local_provider()
 
 
 def get_top_k(default: int = DEFAULT_TOP_K) -> int:

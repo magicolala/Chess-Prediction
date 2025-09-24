@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import chess.engine
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from dotenv import load_dotenv
+
+if importlib.util.find_spec("dotenv") is not None:
+    from dotenv import load_dotenv
+else:  # pragma: no cover - fallback when python-dotenv is absent
+    def load_dotenv(*args: Any, **kwargs: Any) -> bool:
+        """Graceful no-op when python-dotenv isn't installed."""
+
+        return False
 
 from oracle.llm.base import SequenceProvider
+from oracle.llm.hf_serverless import (
+    HuggingFaceServerlessProvider,
+    load_hf_settings_from_env,
+)
 from oracle.llm.llama_cpp_local import LlamaCppLocalProvider
 from oracle.llm.selector import DEFAULT_TOP_K
 from oracle.llm.transformers_local import TransformersLocalProvider
@@ -21,8 +33,23 @@ DEFAULT_ELO = 1500
 DEFAULT_TIME_CONTROL = "classical"
 DEFAULT_STOCKFISH_PATH = os.getenv("STOCKFISH_PATH", "")
 DEFAULT_LLM_BACKEND = os.getenv("ORACLE_LLM_BACKEND", "")
+DEFAULT_LLM_PROVIDER = os.getenv("ORACLE_LLM_PROVIDER", DEFAULT_LLM_BACKEND)
 DEFAULT_TRANSFORMERS_MODEL_ID = os.getenv("ORACLE_MODEL_ID", "")
 DEFAULT_LLAMA_MODEL_PATH = os.getenv("ORACLE_GGUF_PATH", "")
+
+try:
+    _HF_DEFAULTS = load_hf_settings_from_env()
+except RuntimeError:
+    _HF_DEFAULTS = {
+        "model_id": "mistralai/Mistral-7B-Instruct-v0.2",
+        "api_token": None,
+        "top_n_tokens": 10,
+        "temperature": 0.0,
+        "expose_probs": False,
+    }
+DEFAULT_HF_MODEL_ID = str(_HF_DEFAULTS.get("model_id", ""))
+DEFAULT_HF_TOP_N_TOKENS = str(_HF_DEFAULTS.get("top_n_tokens", 10))
+DEFAULT_HF_TEMPERATURE = str(_HF_DEFAULTS.get("temperature", 0.0))
 
 
 def _coerce_numeric_env(name: str, fallback: str, cast) -> str:
@@ -97,6 +124,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <option value=''>Défaut (variables d'environnement)</option>
       <option value='transformers'>Transformers (local)</option>
       <option value='llama_cpp'>llama.cpp (GGUF)</option>
+      <option value='hf_serverless'>Hugging Face (serveur)</option>
     </select>
     <div class='llm-fields' id='llm_transformers'>
       <label for='llm_model_id'>Modèle Transformers :</label>
@@ -107,6 +135,12 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     <div class='llm-fields' id='llm_llama'>
       <label for='llm_model_path'>Chemin du modèle GGUF :</label>
       <input id='llm_model_path' type='text' value='__LLAMA_MODEL_PATH__' placeholder='/chemin/vers/modele.gguf'>
+    </div>
+    <div class='llm-fields' id='llm_hf'>
+      <label for='llm_hf_model_id'>Modèle Hugging Face :</label>
+      <input id='llm_hf_model_id' type='text' value='__HF_MODEL_ID__' placeholder='mistralai/Mistral-7B-Instruct-v0.2'>
+      <label for='llm_hf_api_token'>Jeton API (optionnel) :</label>
+      <input id='llm_hf_api_token' type='password' value=''>
     </div>
     <div class='llm-advanced'>
       <div>
@@ -121,6 +155,14 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <label for='llm_prob_threshold'>Seuil de probabilité :</label>
         <input id='llm_prob_threshold' type='number' min='0.000001' max='0.5' step='0.0001' value='__LLM_PROB_THRESHOLD__'>
       </div>
+      <div>
+        <label for='llm_top_n_tokens'>Top N tokens HF :</label>
+        <input id='llm_top_n_tokens' type='number' min='1' max='50' value='__HF_TOP_N_TOKENS__'>
+      </div>
+      <div>
+        <label for='llm_temperature'>Température :</label>
+        <input id='llm_temperature' type='number' step='0.01' value='__HF_TEMPERATURE__'>
+      </div>
     </div>
   </div>
   <div id='result'></div>
@@ -130,15 +172,23 @@ function updateLlmFields() {
   const backend = document.getElementById('llm_backend').value;
   const tf = document.getElementById('llm_transformers');
   const llama = document.getElementById('llm_llama');
+  const hf = document.getElementById('llm_hf');
   if (backend === 'transformers') {
     tf.style.display = 'flex';
     llama.style.display = 'none';
+    hf.style.display = 'none';
   } else if (backend === 'llama_cpp') {
     tf.style.display = 'none';
     llama.style.display = 'flex';
+    hf.style.display = 'none';
+  } else if (backend === 'hf_serverless') {
+    tf.style.display = 'none';
+    llama.style.display = 'none';
+    hf.style.display = 'flex';
   } else {
     tf.style.display = 'none';
     llama.style.display = 'none';
+    hf.style.display = 'none';
   }
 }
 function collectLlmConfig() {
@@ -156,6 +206,14 @@ function collectLlmConfig() {
   if (!Number.isNaN(probThresholdValue)) {
     config.prob_threshold = probThresholdValue;
   }
+  const topNTokensValue = parseInt(document.getElementById('llm_top_n_tokens').value, 10);
+  if (!Number.isNaN(topNTokensValue)) {
+    config.top_n_tokens = topNTokensValue;
+  }
+  const temperatureValue = parseFloat(document.getElementById('llm_temperature').value);
+  if (!Number.isNaN(temperatureValue)) {
+    config.temperature = temperatureValue;
+  }
   if (backend === 'transformers') {
     config.backend = backend;
     const modelId = document.getElementById('llm_model_id').value.trim();
@@ -171,6 +229,16 @@ function collectLlmConfig() {
     const modelPath = document.getElementById('llm_model_path').value.trim();
     if (modelPath) {
       config.model_path = modelPath;
+    }
+  } else if (backend === 'hf_serverless') {
+    config.backend = backend;
+    const modelId = document.getElementById('llm_hf_model_id').value.trim();
+    if (modelId) {
+      config.model_id = modelId;
+    }
+    const hfToken = document.getElementById('llm_hf_api_token').value.trim();
+    if (hfToken) {
+      config.token = hfToken;
     }
   } else if (Object.keys(config).length === 0) {
     return null;
@@ -226,12 +294,15 @@ document.addEventListener('DOMContentLoaded', () => {
   updateLlmFields();
   console.log('--- Current Configuration ---');
   console.log('STOCKFISH_PATH: ', document.getElementById('stockfish_path').value);
-  console.log('LLM_BACKEND: ', document.getElementById('llm_backend').value || DEFAULT_BACKEND);
+  console.log('LLM_PROVIDER: ', document.getElementById('llm_backend').value || DEFAULT_BACKEND);
   console.log('TRANSFORMERS_MODEL_ID: ', document.getElementById('llm_model_id').value);
   console.log('LLAMA_MODEL_PATH: ', document.getElementById('llm_model_path').value);
+  console.log('HF_MODEL_ID: ', document.getElementById('llm_hf_model_id').value);
   console.log('LLM_DEPTH: ', document.getElementById('llm_depth').value);
   console.log('LLM_TOP_K: ', document.getElementById('llm_top_k').value);
   console.log('LLM_PROB_THRESHOLD: ', document.getElementById('llm_prob_threshold').value);
+  console.log('HF_TOP_N_TOKENS: ', document.getElementById('llm_top_n_tokens').value);
+  console.log('HF_TEMPERATURE: ', document.getElementById('llm_temperature').value);
   console.log('-----------------------------');
 });
 </script>
@@ -250,11 +321,56 @@ def _normalize_backend(value: Any) -> str:
     backend = _clean_string(value).lower()
     if not backend:
         raise ValueError("Merci de sélectionner un backend LLM.")
-    if backend not in {"transformers", "llama_cpp"}:
+    if backend not in {"transformers", "llama_cpp", "hf_serverless"}:
         raise ValueError(
-            "Backend LLM inconnu. Choisissez 'transformers' ou 'llama_cpp'."
+            "Backend LLM inconnu. Choisissez 'transformers', 'llama_cpp' ou 'hf_serverless'."
         )
     return backend
+
+
+def _resolve_hf_config(options: Dict[str, Any]) -> Dict[str, object]:
+    try:
+        settings = dict(load_hf_settings_from_env())
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+
+    model_id = _clean_string(options.get("model_id")) or str(
+        settings.get("model_id", "")
+    )
+    if not model_id:
+        raise ValueError("Merci d'indiquer l'identifiant du modèle Hugging Face.")
+    settings["model_id"] = model_id
+
+    token = _clean_string(options.get("token"))
+    if token:
+        settings["api_token"] = token
+
+    top_n_value = _clean_string(options.get("top_n_tokens"))
+    if top_n_value:
+        try:
+            settings["top_n_tokens"] = max(1, int(top_n_value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Le paramètre Top N tokens doit être un entier.") from exc
+
+    temperature_value = _clean_string(options.get("temperature"))
+    if temperature_value:
+        try:
+            settings["temperature"] = float(temperature_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("La température doit être un nombre.") from exc
+
+    expose_value = options.get("expose_probs")
+    if isinstance(expose_value, bool):
+        settings["expose_probs"] = expose_value
+    elif isinstance(expose_value, str) and expose_value.strip():
+        settings["expose_probs"] = expose_value.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    return settings
 
 
 def _provider_cache_key(options: Dict[str, Any]) -> Tuple[str, ...]:
@@ -266,6 +382,17 @@ def _provider_cache_key(options: Dict[str, Any]) -> Tuple[str, ...]:
     if backend == "llama_cpp":
         model_path = _clean_string(options.get("model_path"))
         return (backend, model_path)
+    if backend == "hf_serverless":
+        settings = _resolve_hf_config(options)
+        token = settings.get("api_token") or ""
+        return (
+            backend,
+            str(settings.get("model_id", "")),
+            str(token),
+            str(settings.get("top_n_tokens", "")),
+            str(settings.get("temperature", "")),
+            str(settings.get("expose_probs", False)),
+        )
     return (backend,)
 
 
@@ -285,7 +412,12 @@ def _build_provider(options: Dict[str, Any]) -> SequenceProvider:
         if not model_path:
             raise ValueError("Merci d'indiquer le chemin du modèle GGUF.")
         return LlamaCppLocalProvider(model_path=model_path)
-    raise ValueError("Backend LLM inconnu. Choisissez 'transformers' ou 'llama_cpp'.")
+    if backend == "hf_serverless":
+        settings = _resolve_hf_config(options)
+        return HuggingFaceServerlessProvider(**settings)
+    raise ValueError(
+        "Backend LLM inconnu. Choisissez 'transformers', 'llama_cpp' ou 'hf_serverless'."
+    )
 
 
 def _get_provider(options: Dict[str, Any]) -> SequenceProvider:
@@ -461,21 +593,29 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
     def index():
         print("--- Current Configuration ---")
         print(f"STOCKFISH_PATH: {DEFAULT_STOCKFISH_PATH}")
-        print(f"LLM_BACKEND: {DEFAULT_LLM_BACKEND}")
+        print(f"LLM_PROVIDER: {DEFAULT_LLM_PROVIDER}")
+        if DEFAULT_LLM_BACKEND:
+            print(f"LEGACY_LLM_BACKEND: {DEFAULT_LLM_BACKEND}")
         print(f"TRANSFORMERS_MODEL_ID: {DEFAULT_TRANSFORMERS_MODEL_ID}")
         print(f"LLAMA_MODEL_PATH: {DEFAULT_LLAMA_MODEL_PATH}")
+        print(f"HF_MODEL_ID: {DEFAULT_HF_MODEL_ID}")
         print(f"LLM_DEPTH: {DEFAULT_LLM_DEPTH}")
         print(f"LLM_TOP_K: {DEFAULT_LLM_TOP_K}")
         print(f"LLM_PROB_THRESHOLD: {DEFAULT_LLM_PROB_THRESHOLD}")
+        print(f"HF_TOP_N_TOKENS: {DEFAULT_HF_TOP_N_TOKENS}")
+        print(f"HF_TEMPERATURE: {DEFAULT_HF_TEMPERATURE}")
         print("-----------------------------")
         return (
             INDEX_HTML_TEMPLATE.replace("__STOCKFISH_PATH__", DEFAULT_STOCKFISH_PATH)
-            .replace("__LLM_BACKEND__", DEFAULT_LLM_BACKEND)
+            .replace("__LLM_BACKEND__", DEFAULT_LLM_PROVIDER)
             .replace("__TRANSFORMERS_MODEL_ID__", DEFAULT_TRANSFORMERS_MODEL_ID)
             .replace("__LLAMA_MODEL_PATH__", DEFAULT_LLAMA_MODEL_PATH)
             .replace("__LLM_DEPTH__", DEFAULT_LLM_DEPTH)
             .replace("__LLM_TOP_K__", DEFAULT_LLM_TOP_K)
             .replace("__LLM_PROB_THRESHOLD__", DEFAULT_LLM_PROB_THRESHOLD)
+            .replace("__HF_MODEL_ID__", DEFAULT_HF_MODEL_ID)
+            .replace("__HF_TOP_N_TOKENS__", DEFAULT_HF_TOP_N_TOKENS)
+            .replace("__HF_TEMPERATURE__", DEFAULT_HF_TEMPERATURE)
         )
 
     return app
