@@ -13,6 +13,7 @@ dependencies = [
     "flask-cors",
     "pytest",
     "pytest-cov",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,9 @@ llm = [
     "accelerate",
     "llama-cpp-python",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["oracle"]
 
 [tool.pytest.ini_options]
 addopts = "--maxfail=1 --disable-warnings"
