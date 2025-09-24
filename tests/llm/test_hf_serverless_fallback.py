@@ -124,3 +124,26 @@ def test_hf_serverless_switches_model_on_404(monkeypatch):
 
     assert created_models == ["model-x", "model-y"], "Should try fallback model on 404"
     assert results, "Fallback model should succeed after 404"
+
+
+def test_default_candidates_skip_retired_models(monkeypatch):
+    monkeypatch.delenv("HF_MODEL_CANDIDATES", raising=False)
+
+    created_models: list[str] = []
+
+    def factory(model: str, token: str | None = None, provider: str | None = None):
+        client = StubInferenceClient(model, token, provider)
+        created_models.append(model)
+        return client
+
+    monkeypatch.setattr("oracle.llm.hf_serverless.InferenceClient", factory)
+
+    provider = HuggingFaceServerlessProvider(model_id="gpt2", api_token="token")
+
+    assert (
+        "tiiuae/falcon-7b-instruct" not in provider.models
+    ), "Deprecated Falcon model should not be part of fallback list"
+    # Ensure the provider still wires up the configured client
+    assert created_models == [
+        provider.current_model
+    ], "Provider should create exactly one client during init"
