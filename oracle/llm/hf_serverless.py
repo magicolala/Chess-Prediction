@@ -14,6 +14,14 @@ try:  # pragma: no cover - optional dependency import
 except Exception:  # pragma: no cover - handled lazily
     InferenceClient = None  # type: ignore[misc]
 
+SAFE_SERVERLESS_MODELS = [
+    "HuggingFaceH4/zephyr-7b-beta",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "google/gemma-2-2b-it",
+    "meta-llama/Llama-3.2-3B-Instruct",
+]
+
 _MISSING_DEPENDENCY_MSG = (
     "huggingface-hub must be installed to use HuggingFaceServerlessProvider"
 )
@@ -128,16 +136,20 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         self._sleep = sleep if sleep is not None else time.sleep
 
         self._client_factory = None
+        self._client_cache: Dict[str, object] = {}
         self.models = self._build_candidate_list(model_id)
         self._model_idx = 0
+        first_model = self.current_model
 
         if client is not None:
+            self.models = [first_model]
             self.client = client
+            self._client_cache[first_model] = client
         else:
             if InferenceClient is None:  # pragma: no cover - dependency guard
                 raise ImportError(_MISSING_DEPENDENCY_MSG)
             self._client_factory = self._create_client
-            self.client = self._client_factory(self.current_model)
+            self.client = self._get_client_for_model(self.current_model)
 
         self.model_id = self.current_model
 
@@ -159,34 +171,50 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
     # Internal helpers ---------------------------------------------------------
     def _call_with_retries(self, prompt: str, top_n: int):
-        attempts = 0
         last_exc: Optional[Exception] = None
-        while attempts < self.max_retries:
-            try:
-                return self.client.text_generation(
-                    prompt,
-                    max_new_tokens=1,
-                    details=True,
-                    return_full_text=False,
-                    do_sample=self.do_sample,
-                    temperature=self.temperature,
-                    top_n_tokens=top_n,
+        for idx, model in enumerate(self.models):
+            client = self._get_client_for_model(model)
+            self._model_idx = idx
+            self.client = client
+            self.model_id = model
+            attempts = 0
+            failed_for_model = False
+            while attempts < self.max_retries:
+                try:
+                    return client.text_generation(
+                        prompt,
+                        max_new_tokens=1,
+                        details=True,
+                        return_full_text=False,
+                        do_sample=self.do_sample,
+                        temperature=self.temperature,
+                        top_n_tokens=top_n,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    failed_for_model = True
+                    attempts += 1
+                    status_code = _extract_status_code(exc)
+                    if status_code == 404:
+                        print(
+                            f"HF serverless 404 on {model}, skipping candidate...",
+                            flush=True,
+                        )
+                        break
+                    if self._should_switch_model(exc):
+                        break
+                    if attempts >= self.max_retries:
+                        break
+                    delay = self.retry_base_delay * (2 ** (attempts - 1))
+                    if status_code == 429:
+                        delay = max(delay, self.rate_limit_delay)
+                    if delay > 0:
+                        self._sleep(delay)
+            if failed_for_model and idx + 1 < len(self.models):
+                print(
+                    f"HF serverless fallback -> {self.models[idx + 1]}",
+                    flush=True,
                 )
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                attempts += 1
-                if self._should_switch_model(exc):
-                    switched = self._advance_model()
-                    if switched:
-                        continue
-                if attempts >= self.max_retries:
-                    break
-                delay = self.retry_base_delay * (2 ** (attempts - 1))
-                status_code = _extract_status_code(exc)
-                if status_code == 429:
-                    delay = max(delay, self.rate_limit_delay)
-                if delay > 0:
-                    self._sleep(delay)
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("Failed to call Hugging Face Inference API")
@@ -227,11 +255,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
             ]
         else:
             primary = model_id or "HuggingFaceH4/zephyr-7b-beta"
-            raw_candidates = [
-                primary,
-                "HuggingFaceH4/zephyr-7b-beta",
-                "Qwen/Qwen2.5-7B-Instruct",
-            ]
+            raw_candidates = [primary, *SAFE_SERVERLESS_MODELS]
         if model_id and model_id not in raw_candidates:
             raw_candidates.insert(0, model_id)
         candidates: List[str] = []
@@ -258,16 +282,14 @@ class HuggingFaceServerlessProvider(SequenceProvider):
             provider=self.provider,
         )
 
-    def _advance_model(self) -> bool:
+    def _get_client_for_model(self, model: str):  # noqa: ANN101
+        if model in self._client_cache:
+            return self._client_cache[model]
         if self._client_factory is None:
-            return False
-        if self._model_idx + 1 >= len(self.models):
-            return False
-        self._model_idx += 1
-        self.client = self._client_factory(self.current_model)
-        self.model_id = self.current_model
-        print(f"HF serverless fallback -> {self.current_model}")
-        return True
+            return self.client
+        client = self._client_factory(model)
+        self._client_cache[model] = client
+        return client
 
     @staticmethod
     def _should_switch_model(exc: Exception) -> bool:

@@ -13,10 +13,12 @@ from flask_cors import CORS
 if importlib.util.find_spec("dotenv") is not None:
     from dotenv import load_dotenv
 else:  # pragma: no cover - fallback when python-dotenv is absent
+
     def load_dotenv(*args: Any, **kwargs: Any) -> bool:
         """Graceful no-op when python-dotenv isn't installed."""
 
         return False
+
 
 from oracle.llm.base import SequenceProvider
 from oracle.llm.hf_serverless import (
@@ -37,6 +39,7 @@ DEFAULT_LLM_PROVIDER = os.getenv("ORACLE_LLM_PROVIDER", DEFAULT_LLM_BACKEND)
 DEFAULT_TRANSFORMERS_MODEL_ID = os.getenv("ORACLE_MODEL_ID", "")
 DEFAULT_LLAMA_MODEL_PATH = os.getenv("ORACLE_GGUF_PATH", "")
 DEFAULT_HF_MODEL_CANDIDATES = os.getenv("HF_MODEL_CANDIDATES", "")
+HF_AUTH_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_API_TOKEN") or ""
 
 try:
     _HF_DEFAULTS = load_hf_settings_from_env()
@@ -607,6 +610,10 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
         print(f"LLM_PROB_THRESHOLD: {DEFAULT_LLM_PROB_THRESHOLD}")
         print(f"HF_TOP_N_TOKENS: {DEFAULT_HF_TOP_N_TOKENS}")
         print(f"HF_TEMPERATURE: {DEFAULT_HF_TEMPERATURE}")
+        if not HF_AUTH_TOKEN:
+            print(
+                "WARNING: No HUGGINGFACEHUB_API_TOKEN set. You may hit rate limits or errors.",
+            )
         print("-----------------------------")
         return (
             INDEX_HTML_TEMPLATE.replace("__STOCKFISH_PATH__", DEFAULT_STOCKFISH_PATH)
