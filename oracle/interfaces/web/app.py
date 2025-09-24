@@ -30,7 +30,16 @@ GAME_TYPES = {
 def create_app(settings: Optional[Settings] = None) -> Flask:
     base_settings = load_settings() if settings is None else settings
     configured = _apply_overrides(base_settings)
-    predictor = create_single_move_predictor(configured)
+    predictor_cache: Dict[str, Any] = {}
+
+    def get_predictor(stockfish_path_override: Optional[str]):
+        effective_path = stockfish_path_override or configured.stockfish_path
+        if effective_path not in predictor_cache:
+            settings_for_path = replace(configured, stockfish_path=effective_path)
+            predictor_cache[effective_path] = create_single_move_predictor(
+                settings_for_path
+            )
+        return predictor_cache[effective_path]
 
     app = Flask(__name__, template_folder="templates")
     app.logger.debug("Web application initialised with model=%s", configured.model_name)
@@ -54,6 +63,7 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
             "game_type": "classical",
             "depth": str(DEFAULT_DEPTH),
             "prob_threshold": str(DEFAULT_PROB_THRESHOLD),
+            "stockfish_path": configured.stockfish_path,
         }
 
         if request.method == "GET":
@@ -64,9 +74,13 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
             "pgn": request.form.get("pgn", "").strip(),
             "white_elo": request.form.get("white_elo", "").strip(),
             "black_elo": request.form.get("black_elo", "").strip(),
-            "game_type": request.form.get("game_type", "classical").strip() or "classical",
+            "game_type": request.form.get("game_type", "classical").strip()
+            or "classical",
             "depth": request.form.get("depth", str(DEFAULT_DEPTH)).strip(),
-            "prob_threshold": request.form.get("prob_threshold", str(DEFAULT_PROB_THRESHOLD)).strip(),
+            "prob_threshold": request.form.get(
+                "prob_threshold", str(DEFAULT_PROB_THRESHOLD)
+            ).strip(),
+            "stockfish_path": request.form.get("stockfish_path", "").strip(),
         }
         app.logger.debug(
             "Received form data (len_pgn=%s, white=%s, black=%s, type=%s, depth=%s, threshold=%s)",
@@ -86,15 +100,22 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
             depth = max(1, min(7, int(form_data["depth"])))
         except ValueError:
             app.logger.warning("Invalid depth value=%s", form_data["depth"])
-            return render(form_data, error="La profondeur doit etre un entier entre 1 et 7.")
+            return render(
+                form_data, error="La profondeur doit etre un entier entre 1 et 7."
+            )
 
         try:
             prob_threshold = float(form_data["prob_threshold"])
             if prob_threshold <= 0 or prob_threshold > 0.1:
                 raise ValueError
         except ValueError:
-            app.logger.warning("Invalid probability threshold value=%s", form_data["prob_threshold"])
-            return render(form_data, error="Le seuil de probabilite doit etre compris entre 0.0001 et 0.1.")
+            app.logger.warning(
+                "Invalid probability threshold value=%s", form_data["prob_threshold"]
+            )
+            return render(
+                form_data,
+                error="Le seuil de probabilite doit etre compris entre 0.0001 et 0.1.",
+            )
 
         try:
             white_elo = int(form_data["white_elo"]) if form_data["white_elo"] else 2000
@@ -106,6 +127,18 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
                 form_data["black_elo"],
             )
             return render(form_data, error="Les valeurs Elo doivent etre des entiers.")
+
+        stockfish_path = form_data["stockfish_path"]
+        effective_stockfish_path = stockfish_path or configured.stockfish_path
+        if not effective_stockfish_path:
+            app.logger.warning("Missing Stockfish path in configuration and form input")
+            return render(
+                form_data,
+                error=(
+                    "Merci d'indiquer le chemin de Stockfish ou de configurer la variable "
+                    "d'environnement STOCKFISH_PATH."
+                ),
+            )
 
         context = GameContext(
             pgn=form_data["pgn"],
@@ -121,6 +154,8 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
         )
 
         try:
+            predictor = get_predictor(stockfish_path)
+            app.logger.debug("Using Stockfish path=%s", effective_stockfish_path)
             report = predictor.predict(
                 context,
                 depth=depth,
