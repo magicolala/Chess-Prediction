@@ -72,7 +72,9 @@ def _normalize_token_entry(entry: object) -> Optional[Tuple[str, float]]:
     return token_text, logprob_value
 
 
-def _unique_preserve_order(pairs: Iterable[Tuple[str, float]]) -> List[Tuple[str, float]]:
+def _unique_preserve_order(
+    pairs: Iterable[Tuple[str, float]],
+) -> List[Tuple[str, float]]:
     """Deduplicate entries while preserving first occurrence order."""
 
     seen: Dict[str, float] = {}
@@ -126,7 +128,9 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         self.api_token = api_token or ""
         self.top_n_tokens = max(1, int(top_n_tokens or 1))
         self.temperature = float(temperature)
-        self.do_sample = bool(do_sample) if do_sample is not None else self.temperature > 0
+        self.do_sample = (
+            bool(do_sample) if do_sample is not None else self.temperature > 0
+        )
         self.expose_probs = bool(expose_probs) if expose_probs is not None else False
         self.provider = (provider or "hf-inference").strip() or "hf-inference"
         self.max_retries = max(1, int(max_retries or 1))
@@ -208,7 +212,9 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         if token_entries:
             first_entry = token_entries[0]
             raw_top_tokens = _get_attr(first_entry, "top_tokens") or []
-            normalized = filter(None, (_normalize_token_entry(item) for item in raw_top_tokens))
+            normalized = filter(
+                None, (_normalize_token_entry(item) for item in raw_top_tokens)
+            )
             top_tokens = _unique_preserve_order(normalized)
             if not top_tokens:
                 fallback = _normalize_token_entry(first_entry)
@@ -225,7 +231,9 @@ class HuggingFaceServerlessProvider(SequenceProvider):
     def _build_candidate_list(self, model_id: str) -> List[str]:
         env_value = os.getenv("HF_MODEL_CANDIDATES", "")
         if env_value:
-            raw_candidates = [item.strip() for item in env_value.split(",") if item.strip()]
+            raw_candidates = [
+                item.strip() for item in env_value.split(",") if item.strip()
+            ]
         else:
             primary = model_id or "HuggingFaceH4/zephyr-7b-beta"
             raw_candidates = [
@@ -272,11 +280,16 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
     @staticmethod
     def _should_switch_model(exc: Exception) -> bool:
+        status_code = _extract_status_code(exc)
+        if status_code == 404:
+            return True
         message = str(exc).lower()
-        return (
+        if (
             "not supported for task text-generation" in message
             and "conversational" in message
-        )
+        ):
+            return True
+        return "model" in message and "not found" in message
 
 
 def load_hf_settings_from_env() -> Dict[str, object]:
@@ -323,4 +336,3 @@ def build_hf_client_from_env() -> HuggingFaceServerlessProvider:
     active_model = getattr(provider, "current_model", None) or provider.model_id
     print(f"HF serverless active model: {active_model}")
     return provider
-
