@@ -2,20 +2,36 @@ import concurrent.futures
 import logging
 import math
 import time
+from importlib import import_module
+from types import ModuleType
 from typing import List, Tuple
-
-import openai
 
 from oracle.domain.models import TokenUsage
 
 
 logger = logging.getLogger(__name__)
 
+_OPENAI_MODULE: ModuleType | None = None
+
+
+def _load_openai() -> ModuleType:
+    global _OPENAI_MODULE
+    if _OPENAI_MODULE is None:
+        _OPENAI_MODULE = import_module("openai")
+    return _OPENAI_MODULE
+
 
 class OpenAISequencePredictor:
     def __init__(self, api_key: str, model: str) -> None:
+        try:
+            self._openai = _load_openai()
+        except ModuleNotFoundError as exc:  # pragma: no cover - defensive guard
+            raise RuntimeError(
+                "The 'openai' package is required to use OpenAISequencePredictor."
+            ) from exc
+
         if api_key:
-            openai.api_key = api_key
+            self._openai.api_key = api_key
         self.model = model
         self.usage = TokenUsage()
         logger.debug("Initialised OpenAISequencePredictor with model=%s", model)
@@ -66,7 +82,7 @@ class OpenAISequencePredictor:
                     attempt + 1,
                     len(prompt),
                 )
-                response = openai.Completion.create(
+                response = self._openai.Completion.create(
                     engine=self.model,
                     prompt=prompt,
                     max_tokens=1,
