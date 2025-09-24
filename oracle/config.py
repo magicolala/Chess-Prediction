@@ -2,6 +2,13 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+else:
+    load_dotenv()
+
 
 DEFAULT_MODEL = "gpt-3.5-turbo-instruct"
 

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import chess.engine
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from dotenv import load_dotenv
 
 from oracle.llm.base import SequenceProvider
 from oracle.llm.llama_cpp_local import LlamaCppLocalProvider
@@ -15,6 +16,7 @@ from oracle.llm.selector import DEFAULT_TOP_K
 from oracle.llm.transformers_local import TransformersLocalProvider
 from oracle.pipeline.analyze import analyze as default_analyze
 
+load_dotenv()
 DEFAULT_ELO = 1500
 DEFAULT_TIME_CONTROL = "classical"
 DEFAULT_STOCKFISH_PATH = os.getenv("STOCKFISH_PATH", "")
@@ -222,6 +224,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('llm_backend').value = DEFAULT_BACKEND;
   }
   updateLlmFields();
+  console.log('--- Current Configuration ---');
+  console.log('STOCKFISH_PATH: ', document.getElementById('stockfish_path').value);
+  console.log('LLM_BACKEND: ', document.getElementById('llm_backend').value || DEFAULT_BACKEND);
+  console.log('TRANSFORMERS_MODEL_ID: ', document.getElementById('llm_model_id').value);
+  console.log('LLAMA_MODEL_PATH: ', document.getElementById('llm_model_path').value);
+  console.log('LLM_DEPTH: ', document.getElementById('llm_depth').value);
+  console.log('LLM_TOP_K: ', document.getElementById('llm_top_k').value);
+  console.log('LLM_PROB_THRESHOLD: ', document.getElementById('llm_prob_threshold').value);
+  console.log('-----------------------------');
 });
 </script>
 </body>
@@ -448,6 +459,15 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
 
     @app.get("/")
     def index():
+        print("--- Current Configuration ---")
+        print(f"STOCKFISH_PATH: {DEFAULT_STOCKFISH_PATH}")
+        print(f"LLM_BACKEND: {DEFAULT_LLM_BACKEND}")
+        print(f"TRANSFORMERS_MODEL_ID: {DEFAULT_TRANSFORMERS_MODEL_ID}")
+        print(f"LLAMA_MODEL_PATH: {DEFAULT_LLAMA_MODEL_PATH}")
+        print(f"LLM_DEPTH: {DEFAULT_LLM_DEPTH}")
+        print(f"LLM_TOP_K: {DEFAULT_LLM_TOP_K}")
+        print(f"LLM_PROB_THRESHOLD: {DEFAULT_LLM_PROB_THRESHOLD}")
+        print("-----------------------------")
         return (
             INDEX_HTML_TEMPLATE.replace("__STOCKFISH_PATH__", DEFAULT_STOCKFISH_PATH)
             .replace("__LLM_BACKEND__", DEFAULT_LLM_BACKEND)
