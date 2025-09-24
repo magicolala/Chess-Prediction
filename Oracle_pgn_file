@@ -33,7 +33,9 @@ def _iterate_games(path: str) -> Iterable[str]:
             game = chess.pgn.read_game(handle)
             if game is None:
                 break
-            exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
+            exporter = chess.pgn.StringExporter(
+                headers=True, variations=False, comments=False
+            )
             game.accept(exporter)
             yield str(exporter)
 

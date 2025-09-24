@@ -16,7 +16,7 @@ DEFAULT_TIME_CONTROL = "classical"
 
 
 def _read_pgn_from_input() -> str:
-    print('Enter the PGN (finish with an empty line or EOF):')
+    print("Enter the PGN (finish with an empty line or EOF):")
     lines = []
     try:
         while True:
