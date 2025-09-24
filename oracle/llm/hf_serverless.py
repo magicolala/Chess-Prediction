@@ -229,8 +229,8 @@ class HuggingFaceServerlessProvider(SequenceProvider):
             primary = model_id or "HuggingFaceH4/zephyr-7b-beta"
             raw_candidates = [
                 primary,
+                "HuggingFaceH4/zephyr-7b-beta",
                 "Qwen/Qwen2.5-7B-Instruct",
-                "tiiuae/falcon-7b-instruct",
             ]
         if model_id and model_id not in raw_candidates:
             raw_candidates.insert(0, model_id)
