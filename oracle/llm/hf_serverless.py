@@ -19,17 +19,6 @@ _MISSING_DEPENDENCY_MSG = (
 )
 
 
-class _MissingInferenceClient:
-    """Placeholder client used when huggingface-hub isn't available."""
-
-    def __init__(self, model_id: str, api_token: str | None) -> None:
-        self.model = model_id
-        self.token = api_token or ""
-
-    def text_generation(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN401
-        raise ImportError(_MISSING_DEPENDENCY_MSG)
-
-
 def _get_attr(mapping: object, name: str, default=None):
     """Return attribute or key value from the mapping-like object."""
 
@@ -145,6 +134,8 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         if client is not None:
             self.client = client
         else:
+            if InferenceClient is None:  # pragma: no cover - dependency guard
+                raise ImportError(_MISSING_DEPENDENCY_MSG)
             self._client_factory = self._create_client
             self.client = self._client_factory(self.current_model)
 
@@ -260,7 +251,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
     def _create_client(self, model: str):  # noqa: ANN101
         if InferenceClient is None:  # pragma: no cover - dependency guard
-            return _MissingInferenceClient(model, self.api_token or None)
+            raise ImportError(_MISSING_DEPENDENCY_MSG)
         return InferenceClient(
             model=model,
             token=self.api_token or None,

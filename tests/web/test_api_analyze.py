@@ -170,6 +170,33 @@ def test_api_analyze_rejects_invalid_llm_backend():
     assert "backend" in data["error"].lower()
 
 
+def test_api_analyze_handles_missing_llm_dependency(monkeypatch):
+    def fake_get_provider(options):
+        raise ImportError(
+            "huggingface-hub must be installed to use HuggingFaceServerlessProvider"
+        )
+
+    app = web_app.create_app(analyze_fn=lambda **_: pytest.fail("should not run"))
+    monkeypatch.setattr(web_app, "_get_provider", fake_get_provider)
+    client = app.test_client()
+
+    payload = {
+        "pgn": "1. e4 e5",
+        "context": {"elo": 1500, "time_control": "rapid"},
+        "llm": {"backend": "hf_serverless"},
+    }
+
+    response = client.post(
+        "/api/analyze",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    data = response.get_json()
+    assert "dépendance" in data["error"].lower()
+
+
 def test_api_analyze_accepts_llm_overrides_without_backend():
     captured_kwargs = {}
 
