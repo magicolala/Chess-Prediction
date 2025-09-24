@@ -1,24 +1,125 @@
-from dataclasses import replace
+"""Compatibility CLI for single-move analysis using the local pipeline."""
 
-from oracle.config import Settings, load_settings, resolve_value
-from oracle.interfaces.cli.single_move import run_single_move_cli
+from __future__ import annotations
 
-OPENAI_API_KEY = ""
-STOCKFISH_PATH = ""
-MODEL_NAME = "gpt-3.5-turbo-instruct"
-DEPTH = 5
-PROB_THRESHOLD = 0.001
+import io
+import os
+from typing import Callable, Dict, Optional
+
+import chess
+import chess.pgn
+
+from oracle.pipeline.analyze import analyze as default_analyze
+
+DEFAULT_ELO = 1500
+DEFAULT_TIME_CONTROL = "classical"
 
 
-def _apply_overrides(settings: Settings) -> Settings:
-    return replace(
-        settings,
-        openai_api_key=resolve_value(OPENAI_API_KEY, settings.openai_api_key),
-        stockfish_path=resolve_value(STOCKFISH_PATH, settings.stockfish_path),
-        model_name=resolve_value(MODEL_NAME, settings.model_name),
+def _read_pgn_from_input() -> str:
+    print('Enter the PGN (finish with an empty line or EOF):')
+    lines = []
+    try:
+        while True:
+            line = input()
+            if not line.strip():
+                break
+            lines.append(line)
+    except EOFError:
+        pass
+    return "\n".join(lines).strip()
+
+
+def _derive_context(pgn: str) -> Dict[str, object]:
+    elo_env = os.getenv("ORACLE_ELO")
+    time_env = os.getenv("ORACLE_TIME_CONTROL")
+
+    game = chess.pgn.read_game(io.StringIO(pgn))
+    headers = game.headers if game else {}
+
+    def _parse_elo(value: Optional[str]) -> int:
+        if not value:
+            return DEFAULT_ELO
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return DEFAULT_ELO
+
+    elo = _parse_elo(headers.get("WhiteElo") or headers.get("BlackElo") or elo_env)
+    time_control = _normalize_time_control(
+        headers.get("TimeControl") or time_env or DEFAULT_TIME_CONTROL
     )
+
+    return {"elo": elo, "time_control": time_control}
+
+
+def _normalize_time_control(value: str) -> str:
+    value = value.lower()
+    if value in {"bullet", "blitz", "rapid", "classical"}:
+        return value
+    base = value.split("+")[0]
+    try:
+        if ":" in base:
+            minutes, seconds = base.split(":")
+            total_seconds = int(minutes) * 60 + int(seconds)
+        else:
+            total_seconds = int(base)
+    except ValueError:
+        return DEFAULT_TIME_CONTROL
+    if total_seconds <= 120:
+        return "bullet"
+    if total_seconds <= 300:
+        return "blitz"
+    if total_seconds <= 900:
+        return "rapid"
+    return "classical"
+
+
+def _format_sf_eval(move: Dict[str, object]) -> str:
+    if "sf_eval_mate" in move and move["sf_eval_mate"] is not None:
+        return f"M{move['sf_eval_mate']}"
+    if "sf_eval_cp" in move and move["sf_eval_cp"] is not None:
+        return f"{move['sf_eval_cp']}"
+    return ""
+
+
+def main(
+    pgn: Optional[str] = None,
+    *,
+    analyze_fn: Callable[..., Dict[str, object]] = default_analyze,
+    depth: int = 3,
+    prob_threshold: float = 0.0,
+    top_k: Optional[int] = None,
+) -> Dict[str, object]:
+    """Run the single-move CLI and return the analysis result."""
+
+    pgn_content = (pgn or _read_pgn_from_input()).strip()
+    if not pgn_content:
+        raise ValueError("No PGN provided")
+
+    context = _derive_context(pgn_content)
+
+    result = analyze_fn(
+        pgn=pgn_content,
+        ctx=context,
+        depth=depth,
+        prob_threshold=prob_threshold,
+        top_k=top_k,
+    )
+
+    print(f"Model: {result.get('model', 'unknown')}")
+    print(f"Expected score: {result.get('expected_score', 0.0):.3f}")
+    print("Move           Prior %   Adjusted %   SF Eval   Quality")
+    for move in result.get("moves", []):
+        print(
+            f"{move['san']:<12}"
+            f"{move.get('prior_pct', 0.0):>8.2f}"
+            f"{move.get('adjusted_pct', 0.0):>12.2f}"
+            f"{_format_sf_eval(move):>10}"
+            f"{move.get('quality', ''):>10}"
+        )
+
+    return result
 
 
 if __name__ == "__main__":
-    settings = _apply_overrides(load_settings())
-    run_single_move_cli(settings, depth=DEPTH, prob_threshold=PROB_THRESHOLD)
+    main()

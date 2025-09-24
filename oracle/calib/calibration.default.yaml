@@ -1,0 +1,17 @@
+quality_bias:
+  good: 0.3
+  inaccuracy: -0.2
+  mistake: -0.5
+  blunder: -1.0
+  unknown: 0.0
+  mate: 0.4
+
+time_control_bias:
+  bullet: -0.2
+  blitz: -0.05
+  rapid: 0.05
+  classical: 0.1
+
+elo:
+  reference: 1500
+  scale: 0.0005
