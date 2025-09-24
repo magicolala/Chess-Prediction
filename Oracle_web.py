@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import chess.engine
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from dotenv import load_dotenv
+
+if importlib.util.find_spec("dotenv") is not None:
+    from dotenv import load_dotenv
+else:  # pragma: no cover - fallback when python-dotenv is absent
+    def load_dotenv(*args: Any, **kwargs: Any) -> bool:
+        """Graceful no-op when python-dotenv isn't installed."""
+
+        return False
 
 from oracle.llm.base import SequenceProvider
 from oracle.llm.hf_serverless import (
