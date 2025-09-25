@@ -31,8 +31,8 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    | --- | --- | --- |
    | `LLM_PROVIDER` | Sélectionne le backend | `hf_serverless` |
    | `HF_API_TOKEN` | Token optionnel Hugging Face | *(vide)* |
-   | `HF_MODEL_ID` | Modèle primaire text-generation | `meta-llama/Meta-Llama-3.1-8B-Instruct` |
-   | `HF_MODEL_CANDIDATES` | Liste CSV des candidats (ordre de fallback) | `meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3,mistralai/Mistral-Nemo-Instruct-2407,google/gemma-2-9b-it,Qwen/Qwen2.5-7B-Instruct` |
+   | `HF_MODEL_ID` | Modèle primaire text-generation | `meta-llama/Llama-3.1-8B-Instruct` |
+   | `HF_MODEL_CANDIDATES` | Liste CSV des candidats (ordre de fallback) | Découverte dynamique (`meta-llama/Llama-3.2-1B-Instruct`, `meta-llama/Llama-3.2-3B-Instruct`, `meta-llama/Llama-3.1-8B-Instruct`, `mistralai/Mistral-7B-Instruct-v0.2`, `HuggingFaceH4/zephyr-7b-beta`, `Qwen/Qwen2.5-7B-Instruct`, `google/gemma-2-9b-it`, …) |
    | `HF_TOP_N_TOKENS` | Nombre de tokens renvoyés par la distribution | `10` |
    | `HF_TEMPERATURE` | Température (laisser `0` pour un comportement déterministe) | `0` |
 
@@ -41,8 +41,8 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    ```powershell
    setx LLM_PROVIDER "hf_serverless"
    setx HF_API_TOKEN "hf_xxxxxxxxxxxxxxxxx"
-   setx HF_MODEL_ID "meta-llama/Meta-Llama-3.1-8B-Instruct"
-   setx HF_MODEL_CANDIDATES "meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3,mistralai/Mistral-Nemo-Instruct-2407,google/gemma-2-9b-it,Qwen/Qwen2.5-7B-Instruct"
+   setx HF_MODEL_ID "meta-llama/Llama-3.1-8B-Instruct"
+   setx HF_MODEL_CANDIDATES "meta-llama/Llama-3.2-1B-Instruct,meta-llama/Llama-3.2-3B-Instruct,meta-llama/Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.2,HuggingFaceH4/zephyr-7b-beta,Qwen/Qwen2.5-7B-Instruct,google/gemma-2-9b-it"
    setx HF_TOP_N_TOKENS "10"
    setx HF_TEMPERATURE "0"
    ```
@@ -52,8 +52,8 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    ```bash
    export LLM_PROVIDER="hf_serverless"
    export HF_API_TOKEN="hf_xxxxxxxxxxxxxxxxx"
-   export HF_MODEL_ID="meta-llama/Meta-Llama-3.1-8B-Instruct"
-   export HF_MODEL_CANDIDATES="meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3,mistralai/Mistral-Nemo-Instruct-2407,google/gemma-2-9b-it,Qwen/Qwen2.5-7B-Instruct"
+   export HF_MODEL_ID="meta-llama/Llama-3.1-8B-Instruct"
+   export HF_MODEL_CANDIDATES="meta-llama/Llama-3.2-1B-Instruct,meta-llama/Llama-3.2-3B-Instruct,meta-llama/Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.2,HuggingFaceH4/zephyr-7b-beta,Qwen/Qwen2.5-7B-Instruct,google/gemma-2-9b-it"
    export HF_TOP_N_TOKENS="10"
    export HF_TEMPERATURE="0"
    ```

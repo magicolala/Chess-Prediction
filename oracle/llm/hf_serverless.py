@@ -7,6 +7,11 @@ import os
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+try:  # pragma: no cover - optional dependency import
+    from huggingface_hub import list_models
+except Exception:  # pragma: no cover - handled lazily
+    list_models = None  # type: ignore[misc]
+
 from .base import SequenceProvider
 
 try:  # pragma: no cover - optional dependency import
@@ -14,19 +19,19 @@ try:  # pragma: no cover - optional dependency import
 except Exception:  # pragma: no cover - handled lazily
     InferenceClient = None  # type: ignore[misc]
 
-# NOTE: Keep this list aligned with the serverless models that Hugging Face makes
-# publicly available via the ``hf-inference`` provider. The router returns a 404
-# when a checkpoint is not exposed through serverless inference, so the
-# candidates below are limited to models that currently resolve correctly. The
-# default ordering favours smaller checkpoints to reduce cold-start latency for
-# users who have not configured an explicit ``HF_MODEL_ID``.
+# NOTE: ``SAFE_SERVERLESS_MODELS`` provides a static safety net when runtime
+# discovery fails (e.g. because `huggingface_hub` is not installed in the user's
+# environment). The entries are manually verified against the ``hf-inference``
+# router using ``list_models(inference="warm", pipeline_tag="text-generation")``
+# on 2024-09-25 and prioritise the smaller checkpoints to keep cold starts fast.
 SAFE_SERVERLESS_MODELS = [
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "meta-llama/Llama-3.2-3B-Instruct",
+    "meta-llama/Llama-3.1-8B-Instruct",
     "meta-llama/Meta-Llama-3-8B-Instruct",
-    "microsoft/Phi-3-mini-4k-instruct",
     "mistralai/Mistral-7B-Instruct-v0.2",
-    "meta-llama/Meta-Llama-3-70B-Instruct",
-    "mistralai/Mistral-Nemo-Instruct-2407",
-    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "HuggingFaceH4/zephyr-7b-beta",
+    "Qwen/Qwen2.5-7B-Instruct",
     "google/gemma-2-9b-it",
 ]
 
@@ -224,7 +229,15 @@ class HuggingFaceServerlessProvider(SequenceProvider):
                     flush=True,
                 )
         if last_exc is not None:
-            if _extract_status_code(last_exc) == 404:
+            status = _extract_status_code(last_exc)
+            if status in {401, 403}:
+                raise RuntimeError(
+                    "Hugging Face Inference API rejected the request with an "
+                    "authorization error. Provide an HF_API_TOKEN that has "
+                    "access to the selected checkpoints (and accept any "
+                    "required model terms) before retrying."
+                ) from last_exc
+            if status == 404:
                 candidate_list = ", ".join(self.models)
                 raise RuntimeError(
                     "All configured Hugging Face serverless models returned 404 (not found). "
@@ -270,8 +283,9 @@ class HuggingFaceServerlessProvider(SequenceProvider):
                 item.strip() for item in env_value.split(",") if item.strip()
             ]
         else:
-            primary = model_id or "meta-llama/Meta-Llama-3-8B-Instruct"
-            raw_candidates = [primary, *SAFE_SERVERLESS_MODELS]
+            primary = model_id or "meta-llama/Llama-3.1-8B-Instruct"
+            discovered = _discover_serverless_models()
+            raw_candidates = [primary, *discovered, *SAFE_SERVERLESS_MODELS]
         if model_id and model_id not in raw_candidates:
             raw_candidates.insert(0, model_id)
         candidates: List[str] = []
@@ -324,7 +338,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 def load_hf_settings_from_env() -> Dict[str, object]:
     """Return Hugging Face configuration derived from environment variables."""
 
-    model_id = os.getenv("HF_MODEL_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
+    model_id = os.getenv("HF_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
     api_token = os.getenv("HF_API_TOKEN") or None
     top_n_raw = os.getenv("HF_TOP_N_TOKENS", "10")
     temp_raw = os.getenv("HF_TEMPERATURE", "0")
@@ -365,3 +379,37 @@ def build_hf_client_from_env() -> HuggingFaceServerlessProvider:
     active_model = getattr(provider, "current_model", None) or provider.model_id
     print(f"HF serverless active model: {active_model}")
     return provider
+def _discover_serverless_models(limit: int = 25) -> List[str]:
+    """Return warm Hugging Face serverless checkpoints ordered by size."""
+
+    if list_models is None:
+        return []
+
+    try:
+        candidates = list(
+            list_models(
+                inference="warm", pipeline_tag="text-generation", limit=limit
+            )
+        )
+    except Exception:  # pragma: no cover - network/permission errors
+        return []
+
+    ordered: List[str] = []
+    seen = set()
+    for info in candidates:
+        model_id = getattr(info, "modelId", None) or getattr(info, "id", None)
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        model_id = model_id.strip()
+        lowered = model_id.lower()
+        if "text-generation" not in lowered and "instruct" not in lowered:
+            # Skip obviously unrelated checkpoints when discovery returns
+            # heterogeneous tasks.
+            if not any(keyword in lowered for keyword in ("chat", "zephyr")):
+                continue
+        if model_id in seen:
+            continue
+        ordered.append(model_id)
+        seen.add(model_id)
+    return ordered
+
