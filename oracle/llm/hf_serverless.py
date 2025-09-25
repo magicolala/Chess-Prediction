@@ -14,13 +14,19 @@ try:  # pragma: no cover - optional dependency import
 except Exception:  # pragma: no cover - handled lazily
     InferenceClient = None  # type: ignore[misc]
 
+# NOTE: Keep this list aligned with the serverless models that Hugging Face makes
+# publicly available via the ``hf-inference`` provider. The router returns a 404
+# when a checkpoint is not exposed through serverless inference, so the
+# candidates below are limited to models that currently resolve correctly. The
+# default ordering favours reasonably small checkpoints to reduce cold-start
+# latency for users who have not configured an explicit ``HF_MODEL_ID``.
 SAFE_SERVERLESS_MODELS = [
-    "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "meta-llama/Llama-3.1-70B-Instruct",
     "mistralai/Mistral-7B-Instruct-v0.3",
-    "mistralai/Mistral-Nemo-Instruct-2407",
-    "google/gemma-2-9b-it",
-    "Qwen/Qwen2.5-7B-Instruct",
-    "HuggingFaceH4/zephyr-7b-beta",
+    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "google/gemma-2-2b-it",
+    "Qwen/Qwen2-7B-Instruct",
 ]
 
 _MISSING_DEPENDENCY_MSG = (
@@ -263,7 +269,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
                 item.strip() for item in env_value.split(",") if item.strip()
             ]
         else:
-            primary = model_id or "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            primary = model_id or "meta-llama/Llama-3.1-8B-Instruct"
             raw_candidates = [primary, *SAFE_SERVERLESS_MODELS]
         if model_id and model_id not in raw_candidates:
             raw_candidates.insert(0, model_id)
@@ -317,7 +323,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 def load_hf_settings_from_env() -> Dict[str, object]:
     """Return Hugging Face configuration derived from environment variables."""
 
-    model_id = os.getenv("HF_MODEL_ID", "meta-llama/Meta-Llama-3.1-8B-Instruct")
+    model_id = os.getenv("HF_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
     api_token = os.getenv("HF_API_TOKEN") or None
     top_n_raw = os.getenv("HF_TOP_N_TOKENS", "10")
     temp_raw = os.getenv("HF_TEMPERATURE", "0")
