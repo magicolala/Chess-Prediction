@@ -5,6 +5,7 @@ import pytest
 from oracle.llm.hf_serverless import (
     SAFE_SERVERLESS_MODELS,
     HuggingFaceServerlessProvider,
+    _ServerlessCandidate,
     _extract_status_code,
 )
 
@@ -42,6 +43,7 @@ def _build_provider_for_test(models, client_cls=_Always404Client):
     provider._client_cache = {model: client_cls() for model in provider.models}
     provider._client_factory = None
     provider.client = provider._client_cache[provider.models[0]]
+    provider._model_providers = {}
     provider.max_retries = 1
     provider.retry_base_delay = 0.0
     provider.rate_limit_delay = 0.0
@@ -70,7 +72,10 @@ def test_candidate_list_includes_discovered_models(monkeypatch):
     monkeypatch.delenv("HF_MODEL_CANDIDATES", raising=False)
     monkeypatch.setattr(
         "oracle.llm.hf_serverless._discover_serverless_models",
-        lambda limit=25: ["discovered-a", "discovered-b"],
+        lambda limit=25: [
+            _ServerlessCandidate("discovered-a", "hf-inference"),
+            _ServerlessCandidate("discovered-b", "hf-inference"),
+        ],
     )
     candidates = provider._build_candidate_list("primary-model")
     assert candidates[:3] == ["primary-model", "discovered-a", "discovered-b"]

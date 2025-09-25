@@ -5,12 +5,13 @@ from __future__ import annotations
 import math
 import os
 import time
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - optional dependency import
-    from huggingface_hub import list_models
+    from huggingface_hub import HfApi, list_models
 except Exception:  # pragma: no cover - handled lazily
     list_models = None  # type: ignore[misc]
+    HfApi = None  # type: ignore[misc]
 
 from .base import SequenceProvider
 
@@ -19,21 +20,24 @@ try:  # pragma: no cover - optional dependency import
 except Exception:  # pragma: no cover - handled lazily
     InferenceClient = None  # type: ignore[misc]
 
-# NOTE: ``SAFE_SERVERLESS_MODELS`` provides a static safety net when runtime
+# NOTE: ``SAFE_SERVERLESS_CANDIDATES`` provides a static safety net when runtime
 # discovery fails (e.g. because `huggingface_hub` is not installed in the user's
-# environment). The entries are manually verified against the ``hf-inference``
-# router using ``list_models(inference="warm", pipeline_tag="text-generation")``
-# on 2024-09-25 and prioritise the smaller checkpoints to keep cold starts fast.
-SAFE_SERVERLESS_MODELS = [
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "meta-llama/Llama-3.2-3B-Instruct",
-    "meta-llama/Llama-3.1-8B-Instruct",
-    "meta-llama/Meta-Llama-3-8B-Instruct",
-    "mistralai/Mistral-7B-Instruct-v0.2",
-    "HuggingFaceH4/zephyr-7b-beta",
-    "Qwen/Qwen2.5-7B-Instruct",
-    "google/gemma-2-9b-it",
+# environment). The entries are restricted to checkpoints currently routed via
+# the ``hf-inference`` provider as of 2025-09-25 so that Oracle never attempts
+# providers requiring third-party API keys without an explicit override.
+DEFAULT_SERVERLESS_PROVIDER = "hf-inference"
+
+
+class _ServerlessCandidate(NamedTuple):
+    model_id: str
+    provider: Optional[str] = None
+
+
+SAFE_SERVERLESS_CANDIDATES: List[_ServerlessCandidate] = [
+    _ServerlessCandidate("HuggingFaceTB/SmolLM3-3B", DEFAULT_SERVERLESS_PROVIDER),
 ]
+
+SAFE_SERVERLESS_MODELS = [candidate.model_id for candidate in SAFE_SERVERLESS_CANDIDATES]
 
 _MISSING_DEPENDENCY_MSG = (
     "huggingface-hub must be installed to use HuggingFaceServerlessProvider"
@@ -150,6 +154,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
         self._client_factory = None
         self._client_cache: Dict[str, object] = {}
+        self._model_providers: Dict[str, Optional[str]] = {}
         self.models = self._build_candidate_list(model_id)
         self._model_idx = 0
         first_model = self.current_model
@@ -238,11 +243,21 @@ class HuggingFaceServerlessProvider(SequenceProvider):
                     "required model terms) before retrying."
                 ) from last_exc
             if status == 404:
-                candidate_list = ", ".join(self.models)
+                candidate_details = []
+                for candidate in self.models:
+                    provider_hint = self._resolve_provider_for_model(candidate)
+                    if provider_hint and provider_hint != self.provider:
+                        candidate_details.append(f"{candidate} (provider {provider_hint})")
+                    else:
+                        candidate_details.append(candidate)
+                candidate_list = ", ".join(candidate_details)
                 raise RuntimeError(
                     "All configured Hugging Face serverless models returned 404 (not found). "
+                    "This usually means your Hugging Face account lacks access to the "
+                    "selected provider or you have not accepted the model's usage terms. "
                     "Verify that your HF_MODEL_ID or HF_MODEL_CANDIDATES only reference "
-                    "available serverless checkpoints. Tried: "
+                    "available serverless checkpoints and ensure your HF_API_TOKEN has "
+                    "permissions for their backing provider. Tried: "
                     f"{candidate_list or 'none'}."
                 ) from last_exc
             raise last_exc
@@ -277,24 +292,38 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
     # Candidate management ----------------------------------------------------
     def _build_candidate_list(self, model_id: str) -> List[str]:
+        if not hasattr(self, "_model_providers"):
+            self._model_providers = {}
+        provider_map: Dict[str, Optional[str]] = {}
         env_value = os.getenv("HF_MODEL_CANDIDATES", "")
         if env_value:
             raw_candidates = [
-                item.strip() for item in env_value.split(",") if item.strip()
+                _parse_candidate_entry(item)
+                for item in env_value.split(",")
+                if item.strip()
             ]
         else:
             primary = model_id or "meta-llama/Llama-3.1-8B-Instruct"
             discovered = _discover_serverless_models()
-            raw_candidates = [primary, *discovered, *SAFE_SERVERLESS_MODELS]
-        if model_id and model_id not in raw_candidates:
-            raw_candidates.insert(0, model_id)
+            raw_candidates = [
+                _ServerlessCandidate(primary),
+                *discovered,
+                *SAFE_SERVERLESS_CANDIDATES,
+            ]
+        if model_id and all(entry.model_id != model_id for entry in raw_candidates):
+            raw_candidates.insert(0, _ServerlessCandidate(model_id))
         candidates: List[str] = []
         seen = set()
         for candidate in raw_candidates:
-            if not candidate or candidate in seen:
+            model_name = candidate.model_id.strip()
+            if not model_name or model_name in seen:
                 continue
-            candidates.append(candidate)
-            seen.add(candidate)
+            candidates.append(model_name)
+            seen.add(model_name)
+            if candidate.provider:
+                provider_map[model_name] = candidate.provider
+        if provider_map:
+            self._model_providers.update(provider_map)
         if not candidates:
             raise RuntimeError("No Hugging Face models configured")
         return candidates
@@ -306,10 +335,11 @@ class HuggingFaceServerlessProvider(SequenceProvider):
     def _create_client(self, model: str):  # noqa: ANN101
         if InferenceClient is None:  # pragma: no cover - dependency guard
             raise ImportError(_MISSING_DEPENDENCY_MSG)
+        provider = self._resolve_provider_for_model(model) or self.provider
         return InferenceClient(
             model=model,
             token=self.api_token or None,
-            provider=self.provider,
+            provider=provider,
         )
 
     def _get_client_for_model(self, model: str):  # noqa: ANN101
@@ -333,6 +363,41 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         ):
             return True
         return "model" in message and "not found" in message
+
+    def _resolve_provider_for_model(self, model: str) -> Optional[str]:
+        provider = self._model_providers.get(model)
+        if provider is not None:
+            return provider
+        # Respect explicit provider overrides such as "auto" or custom endpoints.
+        provider_override = getattr(self, "provider", None)
+        if provider_override and provider_override != DEFAULT_SERVERLESS_PROVIDER:
+            return provider_override
+        if HfApi is None:
+            return None
+        try:
+            api = HfApi()
+            info = api.model_info(model, expand=["inferenceProviderMapping"])
+        except Exception:  # pragma: no cover - network/auth failures
+            return None
+
+        mapping = getattr(info, "inference_provider_mapping", None) or []
+        preferred = None
+        for entry in mapping:
+            task = getattr(entry, "task", "") or ""
+            provider_name = getattr(entry, "provider", None)
+            if not provider_name:
+                continue
+            if provider_name == self.provider and task in {
+                "text-generation",
+                "conversational",
+            }:
+                preferred = provider_name
+                break
+            if preferred is None and task in {"text-generation", "conversational"}:
+                preferred = provider_name
+        if preferred:
+            self._model_providers[model] = preferred
+        return preferred
 
 
 def load_hf_settings_from_env() -> Dict[str, object]:
@@ -379,7 +444,22 @@ def build_hf_client_from_env() -> HuggingFaceServerlessProvider:
     active_model = getattr(provider, "current_model", None) or provider.model_id
     print(f"HF serverless active model: {active_model}")
     return provider
-def _discover_serverless_models(limit: int = 25) -> List[str]:
+def _parse_candidate_entry(raw: str) -> _ServerlessCandidate:
+    """Parse an ``HF_MODEL_CANDIDATES`` entry into a candidate tuple."""
+
+    text = raw.strip()
+    if not text:
+        return _ServerlessCandidate("")
+    if "::" in text:
+        provider, model = text.split("::", 1)
+        return _ServerlessCandidate(model.strip(), provider.strip() or None)
+    return _ServerlessCandidate(text)
+
+
+_DISCOVERED_PROVIDERS: Dict[str, Optional[str]] = {}
+
+
+def _discover_serverless_models(limit: int = 25) -> List[_ServerlessCandidate]:
     """Return warm Hugging Face serverless checkpoints ordered by size."""
 
     if list_models is None:
@@ -394,7 +474,16 @@ def _discover_serverless_models(limit: int = 25) -> List[str]:
     except Exception:  # pragma: no cover - network/permission errors
         return []
 
-    ordered: List[str] = []
+    api: Optional[HfApi]
+    if HfApi is None:
+        api = None
+    else:
+        try:
+            api = HfApi()
+        except Exception:  # pragma: no cover - dependency/environment issues
+            api = None
+
+    ordered: List[_ServerlessCandidate] = []
     seen = set()
     for info in candidates:
         model_id = getattr(info, "modelId", None) or getattr(info, "id", None)
@@ -409,7 +498,34 @@ def _discover_serverless_models(limit: int = 25) -> List[str]:
                 continue
         if model_id in seen:
             continue
-        ordered.append(model_id)
+        provider = None
+        if api is not None:
+            try:
+                info_full = api.model_info(
+                    model_id, expand=["inferenceProviderMapping"]
+                )
+            except Exception:  # pragma: no cover - transient API errors
+                info_full = None
+            if info_full is not None:
+                mapping = getattr(info_full, "inference_provider_mapping", None) or []
+                for entry in mapping:
+                    entry_provider = getattr(entry, "provider", None)
+                    task = getattr(entry, "task", "") or ""
+                    if (
+                        entry_provider
+                        and entry_provider == DEFAULT_SERVERLESS_PROVIDER
+                        and task in {"text-generation", "conversational"}
+                    ):
+                        provider = entry_provider
+                        break
+        if provider != DEFAULT_SERVERLESS_PROVIDER:
+            # Skip models that are not backed by the default provider because
+            # they require custom API keys that Oracle cannot manage on behalf
+            # of the user.
+            continue
+        ordered.append(_ServerlessCandidate(model_id, provider))
         seen.add(model_id)
+        if provider:
+            _DISCOVERED_PROVIDERS[model_id] = provider
     return ordered
 
