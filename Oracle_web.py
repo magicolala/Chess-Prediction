@@ -45,7 +45,7 @@ try:
     _HF_DEFAULTS = load_hf_settings_from_env()
 except RuntimeError:
     _HF_DEFAULTS = {
-        "model_id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "model_id": "meta-llama/Llama-3.1-8B-Instruct",
         "api_token": None,
         "top_n_tokens": 10,
         "temperature": 0.0,
@@ -142,7 +142,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     </div>
     <div class='llm-fields' id='llm_hf'>
       <label for='llm_hf_model_id'>Modèle Hugging Face :</label>
-      <input id='llm_hf_model_id' type='text' value='__HF_MODEL_ID__' placeholder='meta-llama/Meta-Llama-3.1-8B-Instruct'>
+      <input id='llm_hf_model_id' type='text' value='__HF_MODEL_ID__' placeholder='meta-llama/Llama-3.1-8B-Instruct'>
       <label for='llm_hf_api_token'>Jeton API (optionnel) :</label>
       <input id='llm_hf_api_token' type='password' value=''>
     </div>
