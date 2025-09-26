@@ -7,6 +7,7 @@ from oracle.llm.hf_serverless import (
     HuggingFaceServerlessProvider,
     _ServerlessCandidate,
     _extract_status_code,
+    DEFAULT_SERVERLESS_PROVIDER,
 )
 
 
@@ -63,7 +64,9 @@ def test_safe_serverless_models_default_list(monkeypatch):
     candidates = provider._build_candidate_list("")
     assert candidates[0] == "meta-llama/Llama-3.1-8B-Instruct"
     expected_tail = [
-        model for model in SAFE_SERVERLESS_MODELS if model != "meta-llama/Llama-3.1-8B-Instruct"
+        model
+        for model in SAFE_SERVERLESS_MODELS
+        if model != "meta-llama/Llama-3.1-8B-Instruct"
     ]
     assert candidates[1 : 1 + len(expected_tail)] == expected_tail
 
@@ -110,3 +113,71 @@ def test_call_with_retries_surfaces_auth_errors():
 )
 def test_extract_status_code_variants(error, expected):
     assert _extract_status_code(error) == expected
+
+
+def test_prune_unroutable_models_drops_known_bad_routes(monkeypatch):
+    provider = object.__new__(HuggingFaceServerlessProvider)
+    provider.provider = DEFAULT_SERVERLESS_PROVIDER
+    provider.models = ["routable", "bad-model"]
+    provider._model_idx = 0
+    provider._model_providers = {"routable": DEFAULT_SERVERLESS_PROVIDER}
+
+    def fake_resolve(self, model):  # noqa: ANN001
+        if model == "bad-model":
+            self._model_providers[model] = None
+        return self._model_providers.get(model)
+
+    monkeypatch.setattr(
+        HuggingFaceServerlessProvider,
+        "_resolve_provider_for_model",
+        fake_resolve,
+        raising=False,
+    )
+
+    provider._prune_unroutable_models()
+    assert provider.models == ["routable"]
+
+
+def test_prune_unroutable_models_keeps_unknown_when_lookup_unavailable(monkeypatch):
+    provider = object.__new__(HuggingFaceServerlessProvider)
+    provider.provider = DEFAULT_SERVERLESS_PROVIDER
+    provider.models = ["unknown", "cached"]
+    provider._model_idx = 0
+    provider._model_providers = {"cached": DEFAULT_SERVERLESS_PROVIDER}
+
+    def fake_resolve(self, model):  # noqa: ANN001
+        if model == "unknown":
+            return None
+        return self._model_providers.get(model)
+
+    monkeypatch.setattr(
+        HuggingFaceServerlessProvider,
+        "_resolve_provider_for_model",
+        fake_resolve,
+        raising=False,
+    )
+
+    provider._prune_unroutable_models()
+    assert provider.models == ["unknown", "cached"]
+
+
+def test_prune_unroutable_models_errors_when_all_removed(monkeypatch):
+    provider = object.__new__(HuggingFaceServerlessProvider)
+    provider.provider = DEFAULT_SERVERLESS_PROVIDER
+    provider.models = ["bad"]
+    provider._model_idx = 0
+    provider._model_providers = {}
+
+    def fake_resolve(self, model):  # noqa: ANN001
+        self._model_providers[model] = None
+        return None
+
+    monkeypatch.setattr(
+        HuggingFaceServerlessProvider,
+        "_resolve_provider_for_model",
+        fake_resolve,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError):
+        provider._prune_unroutable_models()

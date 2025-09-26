@@ -32,7 +32,7 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    | `LLM_PROVIDER` | Sélectionne le backend | `hf_serverless` |
    | `HF_API_TOKEN` | Token Hugging Face requis (accepte aussi `HUGGINGFACEHUB_API_TOKEN`) | *(vide)* |
   | `HF_MODEL_ID` | Modèle primaire text-generation | `meta-llama/Llama-3.1-8B-Instruct` |
-  | `HF_MODEL_CANDIDATES` | Liste CSV des candidats (ordre de fallback) | Découverte dynamique (limité aux checkpoints `hf-inference` comme `HuggingFaceTB/SmolLM3-3B`). Utilisez la syntaxe `provider::model_id` pour cibler un provider spécifique (ex. `novita::meta-llama/Llama-3.1-8B-Instruct`). |
+  | `HF_MODEL_CANDIDATES` | Liste CSV des candidats (ordre de fallback) | Découverte dynamique (limité aux checkpoints `hf-inference` comme `meta-llama/Llama-3.1-8B-Instruct`, `mistralai/Mistral-7B-Instruct-v0.3` et `google/gemma-2-2b-it`). Utilisez la syntaxe `provider::model_id` pour cibler un provider spécifique (ex. `novita::meta-llama/Llama-3.1-8B-Instruct`). |
    | `HF_TOP_N_TOKENS` | Nombre de tokens renvoyés par la distribution | `10` |
    | `HF_TEMPERATURE` | Température (laisser `0` pour un comportement déterministe) | `0` |
 
@@ -42,7 +42,7 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    setx LLM_PROVIDER "hf_serverless"
    setx HF_API_TOKEN "hf_xxxxxxxxxxxxxxxxx"
   setx HF_MODEL_ID "meta-llama/Llama-3.1-8B-Instruct"
-  setx HF_MODEL_CANDIDATES "hf-inference::HuggingFaceTB/SmolLM3-3B,novita::meta-llama/Llama-3.1-8B-Instruct"
+  setx HF_MODEL_CANDIDATES "hf-inference::meta-llama/Llama-3.1-8B-Instruct,hf-inference::mistralai/Mistral-7B-Instruct-v0.3,hf-inference::google/gemma-2-2b-it"
    setx HF_TOP_N_TOKENS "10"
    setx HF_TEMPERATURE "0"
    ```
@@ -53,12 +53,14 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    export LLM_PROVIDER="hf_serverless"
    export HF_API_TOKEN="hf_xxxxxxxxxxxxxxxxx"
   export HF_MODEL_ID="meta-llama/Llama-3.1-8B-Instruct"
-  export HF_MODEL_CANDIDATES="hf-inference::HuggingFaceTB/SmolLM3-3B,novita::meta-llama/Llama-3.1-8B-Instruct"
+  export HF_MODEL_CANDIDATES="hf-inference::meta-llama/Llama-3.1-8B-Instruct,hf-inference::mistralai/Mistral-7B-Instruct-v0.3,hf-inference::google/gemma-2-2b-it"
    export HF_TOP_N_TOKENS="10"
    export HF_TEMPERATURE="0"
    ```
 
 Le provider détecte automatiquement les erreurs « not supported for task text-generation … conversational ». En cas de routage vers un point de terminaison chat-only, il bascule instantanément sur le prochain modèle de `HF_MODEL_CANDIDATES` et relance la requête tout en conservant l'extraction des logprobs (`details` + `top_n_tokens`). Les probabilités retournées pour chaque coup sont normalisées pour sommer à 100 % (±0,1) dans l'API `/api/analyze`.
+
+Depuis janvier 2025, Oracle retire automatiquement les checkpoints serverless qui n'exposent pas de route `hf-inference` exploitable avant même d'envoyer une requête d'inférence. Les modèles restants sont donc directement utilisables avec un simple token Hugging Face, sans erreurs 404 intempestives.
 
 
 ## Examples
