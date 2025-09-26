@@ -139,7 +139,8 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         rate_limit_delay: float = 1.0,
         sleep: Optional[Callable[[float], None]] = None,
     ) -> None:
-        self.api_token = api_token or ""
+        self.api_token = (api_token or "").strip()
+        self._has_api_token = bool(self.api_token)
         self.top_n_tokens = max(1, int(top_n_tokens or 1))
         self.temperature = float(temperature)
         self.do_sample = (
@@ -163,10 +164,16 @@ class HuggingFaceServerlessProvider(SequenceProvider):
             self.models = [first_model]
             self.client = client
             self._client_cache[first_model] = client
+            self._has_api_token = True
         else:
             if InferenceClient is None:  # pragma: no cover - dependency guard
                 raise ImportError(_MISSING_DEPENDENCY_MSG)
             self._client_factory = self._create_client
+            if not self._has_api_token:
+                raise RuntimeError(
+                    "No Hugging Face API token configured. Set HF_API_TOKEN or "
+                    "HUGGINGFACEHUB_API_TOKEN before using the serverless provider.",
+                )
             self.client = self._get_client_for_model(self.current_model)
 
         self.model_id = self.current_model
@@ -190,6 +197,13 @@ class HuggingFaceServerlessProvider(SequenceProvider):
     # Internal helpers ---------------------------------------------------------
     def _call_with_retries(self, prompt: str, top_n: int):
         last_exc: Optional[Exception] = None
+        if not self._has_api_token and self._client_factory is not None:
+            raise RuntimeError(
+                "No Hugging Face API token configured. Provide a valid token via the "
+                "HF_API_TOKEN environment variable or the web UI before requesting "
+                "serverless analysis.",
+            )
+
         for idx, model in enumerate(self.models):
             client = self._get_client_for_model(model)
             self._model_idx = idx
@@ -404,7 +418,11 @@ def load_hf_settings_from_env() -> Dict[str, object]:
     """Return Hugging Face configuration derived from environment variables."""
 
     model_id = os.getenv("HF_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
-    api_token = os.getenv("HF_API_TOKEN") or None
+    api_token = (
+        os.getenv("HF_API_TOKEN")
+        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        or None
+    )
     top_n_raw = os.getenv("HF_TOP_N_TOKENS", "10")
     temp_raw = os.getenv("HF_TEMPERATURE", "0")
     expose_raw = os.getenv("ORACLE_EXPOSE_PROBS", "false")

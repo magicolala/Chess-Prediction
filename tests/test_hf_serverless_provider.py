@@ -44,6 +44,7 @@ def _build_provider_for_test(models, client_cls=_Always404Client):
     provider._client_factory = None
     provider.client = provider._client_cache[provider.models[0]]
     provider._model_providers = {}
+    provider._has_api_token = True
     provider.max_retries = 1
     provider.retry_base_delay = 0.0
     provider.rate_limit_delay = 0.0

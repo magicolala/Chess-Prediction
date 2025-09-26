@@ -39,7 +39,12 @@ DEFAULT_LLM_PROVIDER = os.getenv("ORACLE_LLM_PROVIDER", DEFAULT_LLM_BACKEND)
 DEFAULT_TRANSFORMERS_MODEL_ID = os.getenv("ORACLE_MODEL_ID", "")
 DEFAULT_LLAMA_MODEL_PATH = os.getenv("ORACLE_GGUF_PATH", "")
 DEFAULT_HF_MODEL_CANDIDATES = os.getenv("HF_MODEL_CANDIDATES", "")
-HF_AUTH_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_API_TOKEN") or ""
+HF_AUTH_TOKEN = (
+    os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    or os.getenv("HF_API_TOKEN")
+    or ""
+)
+HF_AUTH_TOKEN_SET = bool(HF_AUTH_TOKEN)
 
 try:
     _HF_DEFAULTS = load_hf_settings_from_env()
@@ -610,9 +615,10 @@ def create_app(analyze_fn: Callable[..., Dict[str, object]] = default_analyze) -
         print(f"LLM_PROB_THRESHOLD: {DEFAULT_LLM_PROB_THRESHOLD}")
         print(f"HF_TOP_N_TOKENS: {DEFAULT_HF_TOP_N_TOKENS}")
         print(f"HF_TEMPERATURE: {DEFAULT_HF_TEMPERATURE}")
-        if not HF_AUTH_TOKEN:
+        print(f"HF_API_TOKEN_SET: {HF_AUTH_TOKEN_SET}")
+        if not HF_AUTH_TOKEN_SET:
             print(
-                "WARNING: No HUGGINGFACEHUB_API_TOKEN set. You may hit rate limits or errors.",
+                "WARNING: No Hugging Face API token detected. Serverless models require a valid token.",
             )
         print("-----------------------------")
         return (

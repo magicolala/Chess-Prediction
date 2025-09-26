@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from oracle.llm.hf_serverless import HuggingFaceServerlessProvider
 from oracle.llm.hf_serverless import load_hf_settings_from_env
 
@@ -67,14 +69,17 @@ def test_hf_serverless_defaults_provider(monkeypatch):
 
 def test_hf_serverless_provider_env_override(monkeypatch):
     monkeypatch.setenv("HF_PROVIDER", "auto")
+    monkeypatch.setenv("HF_API_TOKEN", "env-token")
     settings = load_hf_settings_from_env()
     assert settings["provider"] == "auto"
+    assert settings["api_token"] == "env-token"
 
     captured = {}
 
     class FakeInferenceClient:
         def __init__(self, *, model, token=None, provider=None, **kwargs):
             captured["provider"] = provider
+            captured["token"] = token
 
         def text_generation(self, *args, **kwargs):  # pragma: no cover - not exercised
             raise AssertionError("text_generation should not be called")
@@ -85,7 +90,34 @@ def test_hf_serverless_provider_env_override(monkeypatch):
 
     provider = HuggingFaceServerlessProvider(**settings)
     assert provider.provider == "auto"
+    assert captured["token"] == "env-token"
     assert captured["provider"] == "auto"
+
+
+def test_hf_serverless_requires_token_for_network(monkeypatch):
+    monkeypatch.delenv("HF_API_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACEHUB_API_TOKEN", raising=False)
+
+    class FakeInferenceClient:  # pragma: no cover - not used
+        def __init__(self, *args, **kwargs):  # noqa: D401, ANN002, ANN003
+            """Stub"""
+
+    monkeypatch.setattr(
+        "oracle.llm.hf_serverless.InferenceClient",
+        FakeInferenceClient,
+    )
+
+    with pytest.raises(RuntimeError, match="No Hugging Face API token configured"):
+        HuggingFaceServerlessProvider(model_id="mixtral")
+
+
+def test_load_hf_settings_uses_hub_token(monkeypatch):
+    monkeypatch.delenv("HF_API_TOKEN", raising=False)
+    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "hub-token")
+
+    settings = load_hf_settings_from_env()
+
+    assert settings["api_token"] == "hub-token"
 
 
 def test_hf_serverless_returns_top_sequences():

@@ -30,7 +30,7 @@ Oracle peut fonctionner gratuitement via l'API serverless de Hugging Face en uti
    | Variable | Description | Valeur par défaut |
    | --- | --- | --- |
    | `LLM_PROVIDER` | Sélectionne le backend | `hf_serverless` |
-   | `HF_API_TOKEN` | Token optionnel Hugging Face | *(vide)* |
+   | `HF_API_TOKEN` | Token Hugging Face requis (accepte aussi `HUGGINGFACEHUB_API_TOKEN`) | *(vide)* |
   | `HF_MODEL_ID` | Modèle primaire text-generation | `meta-llama/Llama-3.1-8B-Instruct` |
   | `HF_MODEL_CANDIDATES` | Liste CSV des candidats (ordre de fallback) | Découverte dynamique (limité aux checkpoints `hf-inference` comme `HuggingFaceTB/SmolLM3-3B`). Utilisez la syntaxe `provider::model_id` pour cibler un provider spécifique (ex. `novita::meta-llama/Llama-3.1-8B-Instruct`). |
    | `HF_TOP_N_TOKENS` | Nombre de tokens renvoyés par la distribution | `10` |
