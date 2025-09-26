@@ -71,6 +71,7 @@ def test_selector_hf_serverless(monkeypatch):
     monkeypatch.setenv("HF_MODEL_ID", "test/model")
     monkeypatch.setenv("HF_TOP_N_TOKENS", "7")
     monkeypatch.setenv("HF_TEMPERATURE", "0")
+    monkeypatch.setenv("HF_API_TOKEN", "selector-token")
 
     provider = selector.build_sequence_provider()
 
