@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - handled lazily
 # NOTE: ``SAFE_SERVERLESS_CANDIDATES`` provides a static safety net when runtime
 # discovery fails (e.g. because `huggingface_hub` is not installed in the user's
 # environment). The entries are restricted to checkpoints currently routed via
-# the ``hf-inference`` provider as of 2025-09-25 so that Oracle never attempts
+# the ``hf-inference`` provider as of 2025-01-10 so that Oracle never attempts
 # providers requiring third-party API keys without an explicit override.
 DEFAULT_SERVERLESS_PROVIDER = "hf-inference"
 
@@ -34,7 +34,9 @@ class _ServerlessCandidate(NamedTuple):
 
 
 SAFE_SERVERLESS_CANDIDATES: List[_ServerlessCandidate] = [
-    _ServerlessCandidate("HuggingFaceTB/SmolLM3-3B", DEFAULT_SERVERLESS_PROVIDER),
+    _ServerlessCandidate("meta-llama/Llama-3.1-8B-Instruct", DEFAULT_SERVERLESS_PROVIDER),
+    _ServerlessCandidate("mistralai/Mistral-7B-Instruct-v0.3", DEFAULT_SERVERLESS_PROVIDER),
+    _ServerlessCandidate("google/gemma-2-2b-it", DEFAULT_SERVERLESS_PROVIDER),
 ]
 
 SAFE_SERVERLESS_MODELS = [candidate.model_id for candidate in SAFE_SERVERLESS_CANDIDATES]
@@ -157,6 +159,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
         self._client_cache: Dict[str, object] = {}
         self._model_providers: Dict[str, Optional[str]] = {}
         self.models = self._build_candidate_list(model_id)
+        self._prune_unroutable_models()
         self._model_idx = 0
         first_model = self.current_model
 
@@ -396,6 +399,7 @@ class HuggingFaceServerlessProvider(SequenceProvider):
 
         mapping = getattr(info, "inference_provider_mapping", None) or []
         preferred = None
+        fallback = None
         for entry in mapping:
             task = getattr(entry, "task", "") or ""
             provider_name = getattr(entry, "provider", None)
@@ -407,11 +411,57 @@ class HuggingFaceServerlessProvider(SequenceProvider):
             }:
                 preferred = provider_name
                 break
-            if preferred is None and task in {"text-generation", "conversational"}:
-                preferred = provider_name
-        if preferred:
-            self._model_providers[model] = preferred
-        return preferred
+            if fallback is None and task in {"text-generation", "conversational"}:
+                fallback = provider_name
+        resolved = preferred or fallback
+        self._model_providers[model] = resolved
+        return resolved
+
+    def _prune_unroutable_models(self) -> None:
+        """Drop candidates without a usable provider route before inference."""
+
+        models = getattr(self, "models", [])
+        if not models:
+            return
+        provider_hint = (
+            getattr(self, "provider", DEFAULT_SERVERLESS_PROVIDER)
+            or DEFAULT_SERVERLESS_PROVIDER
+        )
+        if provider_hint != DEFAULT_SERVERLESS_PROVIDER:
+            return
+
+        routable: List[str] = []
+        removed: List[str] = []
+        for model in models:
+            if model not in self._model_providers:
+                resolved = self._resolve_provider_for_model(model)
+                # When the provider lookup fails (e.g. dependency missing or
+                # transient HTTP issue) we keep the candidate and retry later.
+                if resolved is not None:
+                    routable.append(model)
+                    continue
+                if model not in self._model_providers:
+                    routable.append(model)
+                    continue
+            provider_name = self._model_providers.get(model)
+            if provider_name:
+                routable.append(model)
+            else:
+                removed.append(model)
+
+        if removed:
+            removed_list = ", ".join(removed)
+            print(
+                f"Pruned Hugging Face serverless models without provider route: {removed_list}",
+                flush=True,
+            )
+
+        if not routable:
+            raise RuntimeError("No routable Hugging Face serverless models available")
+
+        if len(routable) != len(models):
+            self.models = routable
+            self._model_idx = 0
 
 
 def load_hf_settings_from_env() -> Dict[str, object]:
